@@ -67,12 +67,17 @@
 
 <script setup lang="ts">
 import { ref } from "vue"
+import { useRouter } from "vue-router"
 import { api } from "@/services/api"
+import { useAuthStore } from "@/stores/auth"
 
 const email = ref("")
 const password = ref("")
-const error = ref("")
 const loading = ref(false)
+const error = ref("")
+
+const router = useRouter()
+const auth = useAuthStore()
 
 const login = async () => {
   error.value = ""
@@ -84,8 +89,12 @@ const login = async () => {
       password: password.value,
     })
 
-    console.log("Logged in:", res.data)
-    // later → store token, redirect
+    auth.setAuth({
+      token: res.data.accessToken,
+      userId: res.data.userId,
+    })
+
+    router.push("/dashboard")
   } catch (err: any) {
     error.value =
       err.response?.data?.message ||
@@ -95,4 +104,3 @@ const login = async () => {
   }
 }
 </script>
-
