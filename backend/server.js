@@ -1,172 +1,142 @@
 import express from "express";
 import { PrismaClient } from "@prisma/client";
-import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
 
 const app = express();
 const prisma = new PrismaClient();
 
 app.use(express.json());
 
-const JWT_SECRET = "supersecretkey";
-
-// See if the API is running
 app.get("/", (req, res) => {
   res.json({ status: "API running" });
 });
 
-// Authorization end points
+app.post("/users", async (req, res) => {
+  const { name, email } = req.body;
 
-// Register a user
-app.post("/auth/register", async (req, res) => {
-  const { name, email, password, timezone } = req.body;
+  const user = await prisma.user.create({
+    data: { name, email },
+  });
 
-  if (!name || !email || !password || !timezone) {
-    return res.status(400).json({ error: "All fields are required" });
-  }
-
-  const hashedPassword = await bcrypt.hash(password, 10);
-
-  try {
-    const user = await prisma.user.create({
-      data: { name, email, password: hashedPassword, timezone },
-    });
-    res.json({ message: "User registered", userId: user.id });
-  } catch (err) {
-    res.status(400).json({ error: "Email already exists" });
-  }
+  res.json(user);
 });
 
-// Login
-app.post("/auth/login", async (req, res) => {
-  const { email, password } = req.body;
+app.post("/loans", async (req, res) => {
+  const { lenderId, borrowerId, amount, description } = req.body;
 
-  const user = await prisma.user.findUnique({ where: { email } });
-  if (!user) return res.status(401).json({ error: "Invalid credentials" });
-
-  const valid = await bcrypt.compare(password, user.password);
-  if (!valid) return res.status(401).json({ error: "Invalid credentials" });
-
-  const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: "1h" });
-
-  res.json({ userId: user.id, accessToken: token, message: "Welcome back" });
-});
-
-// Middleware to protect routes
-const authMiddleware = (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader) return res.status(401).json({ error: "No token provided" });
-
-  const token = authHeader.split(" ")[1];
-  try {
-    const payload = jwt.verify(token, JWT_SECRET);
-    req.userId = payload.userId;
-    next();
-  } catch {
-    res.status(401).json({ error: "Invalid token" });
-  }
-};
-
-// Arrangement end points
-
-// Create arrangement (loan)
-app.post("/arrangements", authMiddleware, async (req, res) => {
-  const { title, totalAmount, currency, expectedBy, repaymentStyle, note, borrowerId } = req.body;
-
-  if (!title || !totalAmount || !currency || !repaymentStyle || !borrowerId) {
-    return res.status(400).json({ error: "Missing required fields" });
-  }
-
-  const arrangement = await prisma.arrangement.create({
+  const loan = await prisma.loan.create({
     data: {
-      title,
-      totalAmount,
-      currency,
-      expectedBy: expectedBy ? new Date(expectedBy) : null,
-      repaymentStyle,
-      note,
-      lenderId: req.userId,
+      lenderId,
       borrowerId,
+      amount,
+      description,
     },
   });
 
-  res.json(arrangement);
+  res.json(loan);
 });
 
-// Get arrangement by id
-app.get("/arrangements/:id", authMiddleware, async (req, res) => {
-  const arrangementId = Number(req.params.id);
-  if (isNaN(arrangementId)) return res.status(400).json({ error: "Invalid arrangement id" });
-
-  const arrangement = await prisma.arrangement.findUnique({
-    where: { id: arrangementId },
-    include: { lender: true, borrower: true },
-  });
-
-  if (!arrangement) return res.status(404).json({ error: "Arrangement not found" });
-
-  res.json(arrangement);
-});
-
-// Get all arrangements for a user
-app.get("/users/:id/arrangements", authMiddleware, async (req, res) => {
-  const userId = Number(req.params.id);
-  if (isNaN(userId)) return res.status(400).json({ error: "Invalid user id" });
-
-  const arrangements = await prisma.arrangement.findMany({
-    where: { OR: [{ lenderId: userId }, { borrowerId: userId }] },
-    include: { lender: true, borrower: true },
-  });
-
-  res.json(arrangements);
-});
-
-// Repayment
 app.post("/repayments", async (req, res) => {
-  const { arrangementId, amount } = req.body;
+  const { loanId, amount } = req.body;
 
-  // Optionally: check if the logged-in user is the borrower
-  const arrangement = await prisma.arrangement.findUnique({
-    where: { id: arrangementId },
-  });
-
-  if (!arrangement) {
-    return res.status(404).json({ error: "Arrangement not found" });
-  }
-
-  // Only borrower can pay
-  if (arrangement.borrowerId !== req.userId) {
-    return res.status(403).json({ error: "Only borrower can repay" });
-  }
-
-  // Create repayment record
   const repayment = await prisma.repayment.create({
-    data: { arrangementId, amount },
+    data: {
+      loanId,
+      amount,
+    },
   });
 
-  // Optionally update status
-  const repayments = await prisma.repayment.findMany({
-    where: { arrangementId },
-  });
-  const totalRepaid = repayments.reduce((sum, r) => sum + r.amount, 0);
+  res.json(repayment);
+});
 
-  if (totalRepaid >= arrangement.totalAmount) {
-    await prisma.arrangement.update({
-      where: { id: arrangementId },
-      data: { status: "closed" },
-    });
-  } else if (totalRepaid > 0) {
-    await prisma.arrangement.update({
-      where: { id: arrangementId },
-      data: { status: "active" },
-    });
+app.get("/loans/:id", async (req, res) => {
+  const loanId = Number(req.params.id);
+
+  if (isNaN(loanId)) {
+    return res.status(400).json({ error: "Invalid loan id" });
   }
 
-  res.json({ repayment, totalRepaid });
+  const loan = await prisma.loan.findUnique({
+    where: { id: loanId },
+    include: {
+      lender: true,
+      borrower: true,
+      repayments: true,
+    },
+  });
+
+  if (!loan) {
+    return res.status(404).json({ error: "Loan not found" });
+  }
+
+  const totalRepaid = loan.repayments.reduce(
+    (sum, r) => sum + r.amount,
+    0
+  );
+
+  const remaining = loan.amount - totalRepaid;
+
+  res.json({
+    loanId: loan.id,
+    lender: loan.lender.name,
+    borrower: loan.borrower.name,
+    amount: loan.amount,
+    totalRepaid,
+    remaining,
+    status:
+      remaining <= 0
+        ? "paid"
+        : totalRepaid > 0
+        ? "partial"
+        : "pending",
+  });
 });
 
-// Start the server
+app.get("/users/:id/loans", async (req, res) => {
+  const userId = Number(req.params.id);
+
+  if (isNaN(userId)) {
+    return res.status(400).json({ error: "Invalid user id" });
+  }
+
+  const loans = await prisma.loan.findMany({
+    where: {
+      OR: [
+        { lenderId: userId },
+        { borrowerId: userId },
+      ],
+    },
+    include: {
+      lender: true,
+      borrower: true,
+      repayments: true,
+    },
+  });
+
+  const formatted = loans.map((loan) => {
+    const totalRepaid = loan.repayments.reduce(
+      (sum, r) => sum + r.amount,
+      0
+    );
+
+    return {
+      loanId: loan.id,
+      lender: loan.lender.name,
+      borrower: loan.borrower.name,
+      amount: loan.amount,
+      totalRepaid,
+      remaining: loan.amount - totalRepaid,
+      status:
+        totalRepaid === 0
+          ? "pending"
+          : totalRepaid >= loan.amount
+          ? "paid"
+          : "partial",
+    };
+  });
+
+  res.json(formatted);
+});
+
 app.listen(3000, () => {
-  console.log("Server running on http://localhost:3000");
+  console.log("🚀 Server running on http://localhost:3000");
 });
-

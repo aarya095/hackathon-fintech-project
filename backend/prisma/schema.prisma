@@ -8,37 +8,34 @@ generator client {
 }
 
 model User {
-  id          Int           @id @default(autoincrement())
-  name        String
-  email       String        @unique
-  password    String
-  timezone    String
+  id        Int     @id @default(autoincrement())
+  name      String
+  email     String  @unique
 
-  loansGiven  Arrangement[] @relation("LoansGiven")
-  loansTaken  Arrangement[] @relation("LoansTaken")
+  loansGiven     Loan[] @relation("LoansGiven")
+  loansTaken     Loan[] @relation("LoansTaken")
 }
 
-model Arrangement {
-  id             Int      @id @default(autoincrement())
-  title          String
-  totalAmount    Float
-  currency       String
-  expectedBy     DateTime?
-  repaymentStyle String
-  note           String?
-  status         String   @default("pending")
+model Loan {
+  id          Int        @id @default(autoincrement())
+  lenderId    Int
+  borrowerId  Int
+  amount      Float
+  description String
+  createdAt   DateTime   @default(now())
+  dueDate     DateTime?
+  status      String     @default("pending")
 
-  lenderId       Int
-  lender         User     @relation("LoansGiven", fields: [lenderId], references: [id])
-  borrowerId     Int
-  borrower       User     @relation("LoansTaken", fields: [borrowerId], references: [id])
+  lender     User        @relation("LoansGiven", fields: [lenderId], references: [id])
+  borrower   User        @relation("LoansTaken", fields: [borrowerId], references: [id])
+  repayments Repayment[]
 }
 
 model Repayment {
-  id            Int          @id @default(autoincrement())
-  amount        Float
-  arrangementId Int
-  arrangement   Arrangement  @relation(fields: [arrangementId], references: [id])
-  createdAt     DateTime     @default(now())
-}
+  id      Int      @id @default(autoincrement())
+  loanId  Int
+  amount  Float
+  paidAt  DateTime @default(now())
 
+  loan Loan @relation(fields: [loanId], references: [id])
+}
