@@ -37,11 +37,17 @@
           />
         </div>
 
+        <p v-if="error" class="text-sm text-red-600">
+            {{ error }}
+        </p>
+
         <button
-          type="submit"
-          class="w-full py-2 mt-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition"
-        >
-          Login
+            type="submit"
+            :disabled="loading"
+            class="w-full py-2 mt-2 bg-indigo-600 text-white rounded-lg
+                    hover:bg-indigo-700 transition disabled:opacity-50"
+            >
+            {{ loading ? "Signing in…" : "Login" }}
         </button>
       </form>
 
@@ -61,12 +67,32 @@
 
 <script setup lang="ts">
 import { ref } from "vue"
+import { api } from "@/services/api"
 
 const email = ref("")
 const password = ref("")
+const error = ref("")
+const loading = ref(false)
 
-const login = () => {
-  console.log("Login clicked", email.value)
-  // API hookup later
+const login = async () => {
+  error.value = ""
+  loading.value = true
+
+  try {
+    const res = await api.post("/auth/login", {
+      email: email.value,
+      password: password.value,
+    })
+
+    console.log("Logged in:", res.data)
+    // later → store token, redirect
+  } catch (err: any) {
+    error.value =
+      err.response?.data?.message ||
+      "Something went wrong. Please try again."
+  } finally {
+    loading.value = false
+  }
 }
 </script>
+
