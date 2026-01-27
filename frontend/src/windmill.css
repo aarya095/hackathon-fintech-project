@@ -8,20 +8,26 @@
 
 @layer components {
   .btn-primary {
-    @apply px-4 py-2 rounded-lg
-           bg-purple-600 text-white
-           hover:bg-purple-700 transition;
+    @apply px-4 py-2 rounded-lg font-medium
+           bg-teal-600 text-white
+           hover:bg-teal-700 transition;
+  }
+
+  .btn-secondary {
+    @apply px-4 py-2 rounded-lg font-medium
+           bg-gray-100 text-gray-700 border border-gray-300
+           hover:bg-gray-200 transition;
   }
 
   .input {
     @apply w-full px-4 py-2 text-sm
            border border-gray-300 rounded-lg
-           focus:ring-2 focus:ring-purple-200
+           focus:ring-2 focus:ring-teal-200 focus:border-teal-400
            focus:outline-none;
   }
 
   .card {
-    @apply bg-white p-6 rounded-lg shadow-md;
+    @apply bg-white p-6 rounded-xl shadow-md;
   }
 
   .page-center {
