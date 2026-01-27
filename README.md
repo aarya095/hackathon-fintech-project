@@ -6,13 +6,16 @@ A gentle, transparent tool for managing informal lending between friends and fam
 
 ## Features
 
-- **Arrangements** — Create lending arrangements by inviting someone via email. Both parties see the same balance and history.
-- **Payments** — Either party can record a payment; the lender confirms. Full transparency.
-- **Reminders** — Lenders can set gentle reminders. Borrowers can snooze with a reason.
+- **Arrangements** — Create lending arrangements by inviting someone via email (or pick from friends). Both parties see the same balance and history.
+- **Payments** — Either party can record a payment; the lender confirms. You cannot record or confirm more than the amount owed; the UI enforces this.
+- **Reminders** — Lenders can set gentle reminders. Borrowers can snooze with a reason. **Auto-reminders** run periodically and email the borrower when due.
 - **Proposals** — Suggest changes (e.g. new “expected by” date). The other party accepts or rejects.
 - **Activity log** — Every action is logged and visible to both participants.
 - **Trust summary** — A simple, non-financial snapshot of communication and on-time payments.
 - **Close** — When the balance is zero, either party can close the arrangement with a friendly note.
+- **Profile** — View and edit your name and timezone. Profile tab in the nav.
+- **Friends** — Add friends by email, accept/reject requests. Quick-select friends when creating arrangements.
+- **OTP verification** — Signup requires email verification (OTP). Forgot-password flow uses OTP sent to email.
 
 ## Tech Stack
 
@@ -52,7 +55,10 @@ The app runs at `http://localhost:5173`.
 ### Environment (optional)
 
 - **Backend:** `DATABASE_URL` (required; see `backend/.env.example`), `JWT_SECRET`, `PORT`, `CORS_ORIGIN` (defaults work for local dev).
+- **Email (OTP, reminders):** `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `EMAIL_FROM`. If unset, OTP is logged to the console only (dev).
 - **Frontend:** `VITE_API_URL` or `VITE_API_BASE_URL` — API base URL (default: `http://localhost:3000`).
+
+After adding new schema (e.g. `FriendRequest`), run `npx prisma db push` in `backend`.
 
 ## Docker (single-image deployment)
 
@@ -87,9 +93,20 @@ Use the URL users open in the browser (e.g. `https://app.example.com`). No other
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/v1/health` | Health check |
-| POST | `/api/v1/auth/signup` | Create account |
+| POST | `/api/v1/auth/signup` | Create account (legacy) |
+| POST | `/api/v1/auth/signup/request-otp` | Request OTP for signup |
+| POST | `/api/v1/auth/signup/verify` | Verify OTP and create account |
+| POST | `/api/v1/auth/forgot-password` | Request OTP for password reset |
+| POST | `/api/v1/auth/reset-password` | Verify OTP and set new password |
 | POST | `/api/v1/auth/login` | Sign in |
 | POST | `/api/v1/auth/logout` | Sign out |
+| GET | `/api/v1/me` | Profile (auth) |
+| PATCH | `/api/v1/me` | Update profile (auth) |
+| POST | `/api/v1/friends/request` | Send friend request (email) |
+| GET | `/api/v1/friends/requests` | Incoming friend requests |
+| POST | `/api/v1/friends/requests/:id/respond` | Accept/reject request |
+| GET | `/api/v1/friends` | List friends |
+| DELETE | `/api/v1/friends/:userId` | Remove friend |
 | GET | `/api/v1/arrangements` | List your arrangements |
 | POST | `/api/v1/arrangements` | Create arrangement (invite by email) |
 | GET | `/api/v1/arrangements/:id` | Arrangement details |

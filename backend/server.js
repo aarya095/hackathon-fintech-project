@@ -6,6 +6,7 @@ import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import cors from "cors";
+import { sendMail } from "./lib/email.js";
 
 const app = express();
 const prisma = new PrismaClient();
@@ -53,6 +54,17 @@ async function getBalanceRemaining(arrangement) {
   return Math.max(0, arrangement.totalAmount - paid);
 }
 
+async function getPendingPaymentSum(arrangementId) {
+  const result = await prisma.payment.aggregate({
+    where: {
+      arrangementId,
+      status: "pending_confirmation", // Only count pending, not rejected
+    },
+    _sum: { amount: true },
+  });
+  return result._sum.amount ?? 0;
+}
+
 const authMiddleware = (req, res, next) => {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith("Bearer "))
@@ -79,6 +91,28 @@ const requireParticipant = (req, res, next) => {
   req.isBorrower = isBorrower;
   next();
 };
+
+// In-memory OTP store. Key: "email:purpose", value: { otp, expiresAt }
+const otpStore = new Map();
+const OTP_TTL_MS = 10 * 60 * 1000; // 10 min
+
+function generateOtp() {
+  return String(Math.floor(100_000 + Math.random() * 900_000));
+}
+
+function setOtp(email, purpose, otp) {
+  const key = `${email.toLowerCase().trim()}:${purpose}`;
+  otpStore.set(key, { otp, expiresAt: Date.now() + OTP_TTL_MS });
+}
+
+function verifyOtp(email, purpose, otp) {
+  const key = `${email.toLowerCase().trim()}:${purpose}`;
+  const ent = otpStore.get(key);
+  if (!ent || ent.expiresAt < Date.now()) return false;
+  if (ent.otp !== String(otp).trim()) return false;
+  otpStore.delete(key);
+  return true;
+}
 
 // ---------------------------------------------------------------------------
 // Routes: /api/v1
@@ -119,6 +153,94 @@ api.post("/auth/signup", async (req, res) => {
   });
 });
 
+api.post("/auth/signup/request-otp", async (req, res) => {
+  const { email } = req.body;
+  const em = typeof email === "string" ? email.trim() : "";
+  if (!em) return res.status(400).json({ error: "Email is required" });
+
+  const existing = await prisma.user.findUnique({ where: { email: em } });
+  if (existing)
+    return res.status(400).json({ error: "An account with this email already exists" });
+
+  const otp = generateOtp();
+  setOtp(em, "signup", otp);
+  await sendMail(
+    em,
+    "Your verification code – Trust-based lending",
+    `Your verification code is: ${otp}\n\nIt expires in 10 minutes.`
+  );
+  return res.json({ message: "Verification code sent to your email" });
+});
+
+api.post("/auth/signup/verify", async (req, res) => {
+  const { email, otp, name, password, timezone } = req.body;
+  const em = typeof email === "string" ? email.trim() : "";
+  if (!em || !otp || !name || !password)
+    return res.status(400).json({ error: "Email, OTP, name and password are required" });
+
+  if (!verifyOtp(em, "signup", otp))
+    return res.status(400).json({ error: "Invalid or expired verification code" });
+
+  const existing = await prisma.user.findUnique({ where: { email: em } });
+  if (existing)
+    return res.status(400).json({ error: "An account with this email already exists" });
+
+  const hashed = await bcrypt.hash(password, 10);
+  const user = await prisma.user.create({
+    data: {
+      name: String(name).trim(),
+      email: em,
+      password: hashed,
+      timezone: timezone || "UTC",
+    },
+  });
+
+  const accessToken = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: "7d" });
+  return res.status(201).json({
+    userId: String(user.id),
+    accessToken,
+    message: "Account created successfully",
+  });
+});
+
+api.post("/auth/forgot-password", async (req, res) => {
+  const { email } = req.body;
+  const em = typeof email === "string" ? email.trim() : "";
+  if (!em) return res.status(400).json({ error: "Email is required" });
+
+  const user = await prisma.user.findUnique({ where: { email: em } });
+  if (!user) return res.status(404).json({ error: "No account found with this email" });
+
+  const otp = generateOtp();
+  setOtp(em, "reset", otp);
+  await sendMail(
+    em,
+    "Reset your password – Trust-based lending",
+    `Your verification code is: ${otp}\n\nIt expires in 10 minutes. Use it on the reset password page.`
+  );
+  return res.json({ message: "Verification code sent to your email" });
+});
+
+api.post("/auth/reset-password", async (req, res) => {
+  const { email, otp, newPassword } = req.body;
+  const em = typeof email === "string" ? email.trim() : "";
+  if (!em || !otp || !newPassword)
+    return res.status(400).json({ error: "Email, OTP and new password are required" });
+
+  if (!verifyOtp(em, "reset", otp))
+    return res.status(400).json({ error: "Invalid or expired verification code" });
+
+  const user = await prisma.user.findUnique({ where: { email: em } });
+  if (!user) return res.status(404).json({ error: "No account found with this email" });
+
+  const hashed = await bcrypt.hash(newPassword, 10);
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { password: hashed },
+  });
+  return res.json({ message: "Password reset successfully. You can sign in now." });
+});
+
 api.post("/auth/login", async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password)
@@ -140,6 +262,151 @@ api.post("/auth/login", async (req, res) => {
 
 api.post("/auth/logout", (req, res) => {
   res.json({ message: "Logged out successfully" });
+});
+
+// ---------- Profile (me) ----------
+
+api.get("/me", authMiddleware, async (req, res) => {
+  const user = await prisma.user.findUnique({
+    where: { id: req.userId },
+    select: { id: true, name: true, email: true, timezone: true },
+  });
+  if (!user) return res.status(404).json({ error: "User not found" });
+  return res.json({
+    id: String(user.id),
+    name: user.name,
+    email: user.email,
+    timezone: user.timezone || "UTC",
+  });
+});
+
+api.patch("/me", authMiddleware, async (req, res) => {
+  const { name, timezone } = req.body;
+  const data = {};
+  if (typeof name === "string" && name.trim()) data.name = name.trim();
+  if (typeof timezone === "string") data.timezone = timezone.trim() || "UTC";
+  if (Object.keys(data).length === 0)
+    return res.status(400).json({ error: "Provide name and/or timezone to update" });
+  const user = await prisma.user.update({
+    where: { id: req.userId },
+    data,
+    select: { id: true, name: true, email: true, timezone: true },
+  });
+  return res.json({
+    id: String(user.id),
+    name: user.name,
+    email: user.email,
+    timezone: user.timezone || "UTC",
+  });
+});
+
+// ---------- Friends ----------
+
+api.post("/friends/request", authMiddleware, async (req, res) => {
+  const { email } = req.body;
+  const toEmail = typeof email === "string" ? email.trim() : "";
+  if (!toEmail) return res.status(400).json({ error: "Email is required" });
+
+  const toUser = await prisma.user.findUnique({ where: { email: toEmail } });
+  if (!toUser) return res.status(404).json({ error: "No user found with that email" });
+  if (toUser.id === req.userId) return res.status(400).json({ error: "You cannot add yourself" });
+
+  const existing = await prisma.friendRequest.findFirst({
+    where: {
+      OR: [
+        { fromId: req.userId, toId: toUser.id },
+        { fromId: toUser.id, toId: req.userId },
+      ],
+    },
+  });
+  if (existing) {
+    if (existing.status === "accepted")
+      return res.status(400).json({ error: "You are already friends" });
+    if (existing.fromId === req.userId && existing.status === "pending")
+      return res.status(400).json({ error: "Request already sent" });
+    if (existing.toId === req.userId && existing.status === "pending")
+      return res.status(400).json({ error: "They already sent you a request. Check incoming." });
+    return res.status(400).json({ error: "A request exists between you two" });
+  }
+
+  await prisma.friendRequest.create({
+    data: { fromId: req.userId, toId: toUser.id, status: "pending" },
+  });
+  return res.status(201).json({
+    message: "Friend request sent",
+    to: { id: String(toUser.id), name: toUser.name, email: toUser.email },
+  });
+});
+
+api.get("/friends/requests", authMiddleware, async (req, res) => {
+  const rows = await prisma.friendRequest.findMany({
+    where: { toId: req.userId, status: "pending" },
+    include: { from: { select: { id: true, name: true, email: true } } },
+    orderBy: { createdAt: "desc" },
+  });
+  const list = rows.map((r) => ({
+    id: String(r.id),
+    from: {
+      id: String(r.from.id),
+      name: r.from.name,
+      email: r.from.email,
+    },
+    createdAt: r.createdAt,
+  }));
+  return res.json({ requests: list });
+});
+
+api.post("/friends/requests/:id/respond", authMiddleware, async (req, res) => {
+  const id = Number(req.params.id);
+  if (isNaN(id)) return res.status(400).json({ error: "Invalid request id" });
+  const { decision } = req.body;
+  if (!decision || !["accept", "reject"].includes(decision))
+    return res.status(400).json({ error: "decision must be 'accept' or 'reject'" });
+
+  const fr = await prisma.friendRequest.findUnique({
+    where: { id },
+    include: { from: true, to: true },
+  });
+  if (!fr) return res.status(404).json({ error: "Friend request not found" });
+  if (fr.toId !== req.userId) return res.status(403).json({ error: "You can only respond to requests sent to you" });
+  if (fr.status !== "pending") return res.status(400).json({ error: "Request already responded" });
+
+  const status = decision === "accept" ? "accepted" : "rejected";
+  await prisma.friendRequest.update({ where: { id }, data: { status } });
+  return res.json({ status, message: decision === "accept" ? "You are now friends" : "Request rejected" });
+});
+
+api.get("/friends", authMiddleware, async (req, res) => {
+  const accepted = await prisma.friendRequest.findMany({
+    where: { status: "accepted" },
+    include: { from: true, to: true },
+  });
+  const mine = accepted.filter((r) => r.fromId === req.userId || r.toId === req.userId);
+  const list = mine.map((r) => {
+    const other = r.fromId === req.userId ? r.to : r.from;
+    return { id: String(other.id), name: other.name, email: other.email };
+  });
+  return res.json({ friends: list });
+});
+
+api.delete("/friends/:userId", authMiddleware, async (req, res) => {
+  const friendId = Number(req.params.userId);
+  if (isNaN(friendId)) return res.status(400).json({ error: "Invalid user id" });
+  if (friendId === req.userId) return res.status(400).json({ error: "Cannot remove yourself" });
+
+  const fr = await prisma.friendRequest.findFirst({
+    where: {
+      status: "accepted",
+      OR: [
+        { fromId: req.userId, toId: friendId },
+        { fromId: friendId, toId: req.userId },
+      ],
+    },
+  });
+  if (!fr) return res.status(404).json({ error: "Not friends with this user" });
+
+  await prisma.friendRequest.delete({ where: { id: fr.id } });
+  return res.json({ message: "Friend removed" });
 });
 
 // ---------- Arrangements ----------
@@ -294,15 +561,28 @@ api.post("/arrangements/:id/payments", requireParticipant, async (req, res) => {
     return res.status(400).json({ error: "Cannot add payments to a closed arrangement" });
 
   const { amount, paidOn, note } = req.body;
-  if (!amount || Number(amount) <= 0)
+  const amt = Number(amount);
+  if (!amount || amt <= 0)
     return res.status(400).json({ error: "A positive amount is required" });
+
+  const paid = await getPaidAmount(a.id);
+  const pendingSum = await getPendingPaymentSum(a.id);
+  const balanceRemaining = Math.max(0, a.totalAmount - paid);
+  const maxAllowed = Math.max(0, balanceRemaining - pendingSum);
+  if (amt > maxAllowed)
+    return res.status(400).json({
+      error:
+        maxAllowed <= 0
+          ? "Nothing left to pay. Balance is fully covered (including pending payments)."
+          : `Amount cannot exceed ${maxAllowed.toFixed(2)} ${a.currency} (remaining after pending). You owe ${balanceRemaining.toFixed(2)} ${a.currency}.`,
+    });
 
   const paidOnDate = paidOn ? new Date(paidOn) : new Date();
 
   const payment = await prisma.payment.create({
     data: {
       arrangementId: a.id,
-      amount: Number(amount),
+      amount: amt,
       paidOn: paidOnDate,
       note: note || null,
       recordedById: req.userId,
@@ -316,7 +596,7 @@ api.post("/arrangements/:id/payments", requireParticipant, async (req, res) => {
       arrangementId: a.id,
       type: "payment_recorded",
       actorRole: recordedByRole,
-      message: `${formatAmount(amount, a.currency)} recorded — awaiting confirmation`,
+      message: `${formatAmount(amt, a.currency)} recorded — awaiting confirmation`,
     },
   });
 
@@ -360,6 +640,13 @@ api.post("/payments/:paymentId/confirm", authMiddleware, async (req, res) => {
   if (payment.status === "confirmed")
     return res.status(400).json({ error: "Payment is already confirmed" });
 
+  const paid = await getPaidAmount(payment.arrangementId);
+  const wouldBeTotal = paid + payment.amount;
+  if (wouldBeTotal > payment.arrangement.totalAmount)
+    return res.status(400).json({
+      error: `Confirming this payment would exceed the arrangement total (${formatAmount(payment.arrangement.totalAmount, payment.arrangement.currency)}). Maximum confirmable: ${formatAmount(Math.max(0, payment.arrangement.totalAmount - paid), payment.arrangement.currency)}.`,
+    });
+
   await prisma.payment.update({
     where: { id: pid },
     data: {
@@ -385,6 +672,50 @@ api.post("/payments/:paymentId/confirm", authMiddleware, async (req, res) => {
     status: "confirmed",
     balanceRemaining,
     message: "Payment confirmed successfully",
+  });
+});
+
+api.post("/payments/:paymentId/reject", authMiddleware, async (req, res) => {
+  const pid = Number(req.params.paymentId);
+  if (isNaN(pid)) return res.status(400).json({ error: "Invalid payment id" });
+
+  const payment = await prisma.payment.findUnique({
+    where: { id: pid },
+    include: { arrangement: true },
+  });
+  if (!payment) return res.status(404).json({ error: "Payment not found" });
+  if (payment.arrangement.lenderId !== req.userId)
+    return res.status(403).json({ error: "Only the lender can reject payments" });
+  if (payment.status === "confirmed")
+    return res.status(400).json({ error: "Cannot reject a confirmed payment" });
+  if (payment.status === "rejected")
+    return res.status(400).json({ error: "Payment is already rejected" });
+
+  await prisma.payment.update({
+    where: { id: pid },
+    data: {
+      status: "rejected",
+      confirmedAt: null,
+      confirmedById: null,
+    },
+  });
+
+  await prisma.activity.create({
+    data: {
+      arrangementId: payment.arrangementId,
+      type: "payment_rejected",
+      actorRole: "lender",
+      message: `${formatAmount(payment.amount, payment.arrangement.currency)} rejected — payment not received`,
+    },
+  });
+
+  const balanceRemaining = await getBalanceRemaining(payment.arrangement);
+
+  return res.json({
+    paymentId: String(payment.id),
+    status: "rejected",
+    balanceRemaining,
+    message: "Payment rejected",
   });
 });
 
@@ -676,6 +1007,67 @@ api.post("/arrangements/:id/close", requireParticipant, async (req, res) => {
     closedAt,
   });
 });
+
+// ---------- Auto-reminders (cron) ----------
+
+async function processDueReminders() {
+  const now = new Date();
+  const reminders = await prisma.reminder.findMany({
+    where: {
+      nextTrigger: { lte: now },
+      OR: [
+        { status: "active" },
+        {
+          status: "snoozed",
+          snoozeUntil: { lte: now },
+        },
+      ],
+    },
+    include: {
+      arrangement: {
+        include: { lender: true, borrower: true },
+      },
+    },
+  });
+
+  for (const r of reminders) {
+    try {
+      const arr = r.arrangement;
+      if (arr.status === "closed") continue;
+      const borrowerEmail = arr.borrower.email;
+      const lenderName = arr.lender.name;
+      const title = arr.title;
+      const msg = r.customMessage || "Just a gentle reminder — no rush. 🙂";
+      const body = `Hi,\n\n${lenderName} sent you a reminder about "${title}":\n\n"${msg}"\n\nLog in to view details or snooze the reminder.\n\n— Trust-based lending`;
+      await sendMail(
+        borrowerEmail,
+        `Reminder: ${title} — Trust-based lending`,
+        body
+      );
+
+      let next = new Date(now);
+      if (r.schedule === "monthly") next.setMonth(next.getMonth() + 1);
+      else if (r.schedule === "weekly") next.setDate(next.getDate() + 7);
+      else next.setDate(next.getDate() + 7);
+
+      await prisma.reminder.update({
+        where: { id: r.id },
+        data: {
+          nextTrigger: next,
+          status: "active",
+          snoozeUntil: null,
+          visibleNote: null,
+        },
+      });
+    } catch (e) {
+      console.error("[processDueReminders] reminder id", r.id, e);
+    }
+  }
+}
+
+// Run every 60s; also run once shortly after startup
+setInterval(processDueReminders, 60_000);
+setTimeout(processDueReminders, 5_000);
 
 // Mount API
 app.use("/api/v1", api);

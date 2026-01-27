@@ -13,12 +13,26 @@ export default function Landing() {
           </span>
           <nav className="flex gap-4">
             {token ? (
-              <Link
-                to="/dashboard"
-                className="text-sm font-medium text-teal-600 hover:text-teal-700"
-              >
-                Dashboard
-              </Link>
+              <>
+                <Link
+                  to="/dashboard"
+                  className="text-sm font-medium text-teal-600 hover:text-teal-700"
+                >
+                  Dashboard
+                </Link>
+                <Link
+                  to="/friends"
+                  className="text-sm font-medium text-gray-600 hover:text-gray-800"
+                >
+                  Friends
+                </Link>
+                <Link
+                  to="/profile"
+                  className="text-sm font-medium text-gray-600 hover:text-gray-800"
+                >
+                  Profile
+                </Link>
+              </>
             ) : (
               <>
                 <Link

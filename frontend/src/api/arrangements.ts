@@ -125,6 +125,15 @@ export function confirmPayment(paymentId: string, confirmed: boolean) {
   }>(`${P}/payments/${paymentId}/confirm`, { confirmed })
 }
 
+export function rejectPayment(paymentId: string) {
+  return api.post<{
+    paymentId: string
+    status: string
+    balanceRemaining: number
+    message: string
+  }>(`${P}/payments/${paymentId}/reject`)
+}
+
 export function getReminders(arrangementId: string) {
   return api.get<{ reminders: ReminderItem[] }>(
     `${P}/arrangements/${arrangementId}/reminders`

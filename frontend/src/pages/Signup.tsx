@@ -1,28 +1,75 @@
 import { useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
-import { signup } from "@/api/auth"
+import { useAuthStore } from "../stores/auth"
+import { signupRequestOtp, signupVerify } from "@/api/auth"
+
+type Step = "email" | "verify"
 
 export default function Signup() {
   const navigate = useNavigate()
-  const [name, setName] = useState("")
+  const auth = useAuthStore()
+  const [step, setStep] = useState<Step>("email")
   const [email, setEmail] = useState("")
+  const [otp, setOtp] = useState("")
+  const [name, setName] = useState("")
   const [password, setPassword] = useState("")
   const [timezone] = useState(
     () => Intl.DateTimeFormat().resolvedOptions().timeZone
   )
   const [loading, setLoading] = useState(false)
+  const [resendLoading, setResendLoading] = useState(false)
   const [error, setError] = useState("")
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleRequestOtp = async (e: React.FormEvent) => {
     e.preventDefault()
+    const em = email.trim()
+    if (!em) return
     setError("")
     setLoading(true)
     try {
-      await signup({ name, email, password, timezone })
-      navigate("/login", { replace: true })
+      await signupRequestOtp(em)
+      setStep("verify")
     } catch (err: unknown) {
       const ax = err as { response?: { data?: { error?: string } } }
-      setError(ax.response?.data?.error ?? "Sign up failed. Please try again.")
+      setError(ax.response?.data?.error ?? "Could not send verification code.")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleResendOtp = async () => {
+    if (!email.trim()) return
+    setError("")
+    setResendLoading(true)
+    try {
+      await signupRequestOtp(email.trim())
+      setError("")
+    } catch (err: unknown) {
+      const ax = err as { response?: { data?: { error?: string } } }
+      setError(ax.response?.data?.error ?? "Could not resend code.")
+    } finally {
+      setResendLoading(false)
+    }
+  }
+
+  const handleVerify = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!email.trim() || !otp.trim() || !name.trim() || !password) return
+    setError("")
+    setLoading(true)
+    try {
+      const { data } = await signupVerify({
+        email: email.trim(),
+        otp: otp.trim(),
+        name: name.trim(),
+        password,
+        timezone,
+      })
+      auth.login(data.userId, data.accessToken)
+      navigate("/dashboard", { replace: true })
+    } catch (err: unknown) {
+      const ax = err as { response?: { data?: { error?: string } } }
+      setError(ax.response?.data?.error ?? "Verification failed. Please try again.")
     } finally {
       setLoading(false)
     }
@@ -36,7 +83,9 @@ export default function Signup() {
             Create your account
           </h1>
           <p className="text-sm text-gray-500 mt-1">
-            Start managing arrangements with people you trust
+            {step === "email"
+              ? "We’ll send a verification code to your email"
+              : "Enter the code and complete your profile"}
           </p>
         </div>
 
@@ -49,62 +98,118 @@ export default function Signup() {
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-600 mb-1">
-              Full name
-            </label>
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              required
-              className="input"
-              placeholder="e.g. Priya"
-              autoComplete="name"
+        {step === "email" ? (
+          <form onSubmit={handleRequestOtp} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-600 mb-1">
+                Email
+              </label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                className="input"
+                placeholder="you@example.com"
+                autoComplete="email"
+                disabled={loading}
+              />
+            </div>
+            <button
+              type="submit"
               disabled={loading}
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-600 mb-1">
-              Email
-            </label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-              className="input"
-              placeholder="you@example.com"
-              autoComplete="email"
-              disabled={loading}
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-600 mb-1">
-              Password
-            </label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              className="input"
-              placeholder="••••••••"
-              autoComplete="new-password"
-              disabled={loading}
-            />
-          </div>
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition disabled:opacity-60 font-medium"
-          >
-            {loading ? "Creating account…" : "Create account"}
-          </button>
-        </form>
+              className="w-full py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition disabled:opacity-60 font-medium"
+            >
+              {loading ? "Sending code…" : "Send verification code"}
+            </button>
+          </form>
+        ) : (
+          <form onSubmit={handleVerify} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-600 mb-1">
+                Email
+              </label>
+              <input
+                type="email"
+                value={email}
+                readOnly
+                className="input bg-gray-100"
+                aria-readonly
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-600 mb-1">
+                Verification code
+              </label>
+              <input
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                value={otp}
+                onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                required
+                className="input"
+                placeholder="123456"
+                maxLength={6}
+                disabled={loading}
+              />
+              <button
+                type="button"
+                onClick={handleResendOtp}
+                disabled={resendLoading || loading}
+                className="mt-1 text-sm text-teal-600 hover:underline disabled:opacity-60"
+              >
+                {resendLoading ? "Sending…" : "Resend code"}
+              </button>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-600 mb-1">
+                Full name
+              </label>
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                required
+                className="input"
+                placeholder="e.g. Priya"
+                autoComplete="name"
+                disabled={loading}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-600 mb-1">
+                Password
+              </label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                className="input"
+                placeholder="••••••••"
+                autoComplete="new-password"
+                disabled={loading}
+              />
+            </div>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => setStep("email")}
+                className="flex-1 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition font-medium"
+                disabled={loading}
+              >
+                Back
+              </button>
+              <button
+                type="submit"
+                disabled={loading}
+                className="flex-1 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition disabled:opacity-60 font-medium"
+              >
+                {loading ? "Creating account…" : "Create account"}
+              </button>
+            </div>
+          </form>
+        )}
 
         <p className="text-center text-sm text-gray-500 mt-6">
           Already have an account?{" "}

@@ -8,6 +8,7 @@ import {
   getPayments,
   recordPayment,
   confirmPayment,
+  rejectPayment,
   getReminders,
   createReminder,
   snoozeReminder,
@@ -64,6 +65,7 @@ export default function ArrangementDetail() {
   const [paymentNote, setPaymentNote] = useState("")
   const [recordingPayment, setRecordingPayment] = useState(false)
   const [confirmingId, setConfirmingId] = useState<string | null>(null)
+  const [rejectingId, setRejectingId] = useState<string | null>(null)
   const [reminderCustom, setReminderCustom] = useState("")
   const [creatingReminder, setCreatingReminder] = useState(false)
   const [snoozingId, setSnoozingId] = useState<string | null>(null)
@@ -145,9 +147,13 @@ export default function ArrangementDetail() {
 
   const handleRecordPayment = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!id || !paymentAmount) return
+    if (!id || !paymentAmount || !arr) return
     const amount = parseFloat(paymentAmount)
     if (amount <= 0) return
+    if (amount > arr.balanceRemaining) {
+      setError(`Amount cannot exceed what you owe (${formatCurrency(arr.balanceRemaining, arr.currency)}).`)
+      return
+    }
     setError("")
     setRecordingPayment(true)
     try {
@@ -159,8 +165,9 @@ export default function ArrangementDetail() {
       setPaymentAmount("")
       setPaymentNote("")
       await load()
-    } catch (e) {
-      setError("Could not record payment.")
+    } catch (err: unknown) {
+      const ax = err as { response?: { data?: { error?: string } } }
+      setError(ax.response?.data?.error ?? "Could not record payment.")
     } finally {
       setRecordingPayment(false)
     }
@@ -172,10 +179,25 @@ export default function ArrangementDetail() {
     try {
       await confirmPayment(paymentId, true)
       await load()
-    } catch (e) {
-      setError("Could not confirm payment.")
+    } catch (err: unknown) {
+      const ax = err as { response?: { data?: { error?: string } } }
+      setError(ax.response?.data?.error ?? "Could not confirm payment.")
     } finally {
       setConfirmingId(null)
+    }
+  }
+
+  const handleReject = async (paymentId: string) => {
+    setError("")
+    setRejectingId(paymentId)
+    try {
+      await rejectPayment(paymentId)
+      await load()
+    } catch (err: unknown) {
+      const ax = err as { response?: { data?: { error?: string } } }
+      setError(ax.response?.data?.error ?? "Could not reject payment.")
+    } finally {
+      setRejectingId(null)
     }
   }
 
@@ -309,13 +331,27 @@ export default function ArrangementDetail() {
               Trust-based lending
             </span>
           </div>
-          <button
-            type="button"
-            onClick={handleLogout}
-            className="text-sm text-gray-600 hover:text-gray-800"
-          >
-            Sign out
-          </button>
+          <div className="flex items-center gap-4">
+            <Link
+              to="/profile"
+              className="text-sm text-gray-600 hover:text-gray-800"
+            >
+              Profile
+            </Link>
+            <Link
+              to="/friends"
+              className="text-sm text-gray-600 hover:text-gray-800"
+            >
+              Friends
+            </Link>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="text-sm text-gray-600 hover:text-gray-800"
+            >
+              Sign out
+            </button>
+          </div>
         </div>
       </header>
 
@@ -416,38 +452,60 @@ export default function ArrangementDetail() {
                           className={`text-xs px-2 py-0.5 rounded ${
                             p.status === "confirmed"
                               ? "bg-teal-100 text-teal-800"
-                              : "bg-amber-100 text-amber-800"
+                              : p.status === "rejected"
+                                ? "bg-red-100 text-red-800"
+                                : "bg-amber-100 text-amber-800"
                           }`}
                         >
-                          {p.status === "confirmed" ? "Confirmed" : "Pending"}
+                          {p.status === "confirmed"
+                            ? "Confirmed"
+                            : p.status === "rejected"
+                              ? "Rejected"
+                              : "Pending"}
                         </span>
-                        {p.status !== "confirmed" && isLender && (
-                          <button
-                            type="button"
-                            onClick={() => handleConfirm(p.id)}
-                            disabled={confirmingId === p.id}
-                            className="text-sm text-teal-600 hover:underline disabled:opacity-60"
-                          >
-                            {confirmingId === p.id ? "Confirming…" : "Confirm"}
-                          </button>
+                        {p.status === "pending_confirmation" && isLender && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleConfirm(p.id)}
+                              disabled={confirmingId === p.id || rejectingId === p.id}
+                              className="text-sm text-teal-600 hover:underline disabled:opacity-60"
+                            >
+                              {confirmingId === p.id ? "Confirming…" : "Confirm"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleReject(p.id)}
+                              disabled={rejectingId === p.id || confirmingId === p.id}
+                              className="text-sm text-red-600 hover:underline disabled:opacity-60"
+                            >
+                              {rejectingId === p.id ? "Rejecting…" : "Reject"}
+                            </button>
+                          </>
                         )}
                       </div>
                     </li>
                   ))
                 )}
               </ul>
-              <form onSubmit={handleRecordPayment} className="mt-6 flex flex-wrap gap-3">
-                <input
-                  type="number"
-                  min="0.01"
-                  step="any"
-                  className="input w-32"
-                  value={paymentAmount}
-                  onChange={(e) => setPaymentAmount(e.target.value)}
-                  placeholder="Amount"
-                  required
-                  disabled={recordingPayment}
-                />
+              <form onSubmit={handleRecordPayment} className="mt-6 flex flex-wrap gap-3 items-end">
+                <div>
+                  <input
+                    type="number"
+                    min="0.01"
+                    max={arr.balanceRemaining}
+                    step="any"
+                    className="input w-32"
+                    value={paymentAmount}
+                    onChange={(e) => setPaymentAmount(e.target.value)}
+                    placeholder="Amount"
+                    required
+                    disabled={recordingPayment}
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Max: {formatCurrency(arr.balanceRemaining, arr.currency)}
+                  </p>
+                </div>
                 <input
                   type="text"
                   className="input flex-1 min-w-[140px]"

@@ -31,6 +31,7 @@ RUN npx prisma generate
 
 # Backend source
 COPY backend/server.js ./
+COPY backend/lib ./lib
 COPY backend/prisma.config.ts ./
 
 # Frontend static (from stage 1)

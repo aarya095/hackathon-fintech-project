@@ -8,6 +8,7 @@ import {
   type ArrangementListItem,
   type CreateArrangementInput,
 } from "@/api/arrangements"
+import { listFriends, type Friend } from "@/api/friends"
 
 function formatCurrency(amount: number, currency: string) {
   if (currency === "INR") return `₹${amount.toLocaleString("en-IN")}`
@@ -23,6 +24,7 @@ export default function Dashboard() {
   const [createOpen, setCreateOpen] = useState(false)
   const [createLoading, setCreateLoading] = useState(false)
   const [createError, setCreateError] = useState("")
+  const [friends, setFriends] = useState<Friend[]>([])
   const [form, setForm] = useState<CreateArrangementInput>({
     title: "",
     totalAmount: 0,
@@ -49,6 +51,14 @@ export default function Dashboard() {
   useEffect(() => {
     load()
   }, [])
+
+  useEffect(() => {
+    if (createOpen) {
+      listFriends()
+        .then((r) => setFriends(r.data.friends))
+        .catch(() => setFriends([]))
+    }
+  }, [createOpen])
 
   const handleLogout = async () => {
     try {
@@ -104,6 +114,18 @@ export default function Dashboard() {
             Trust-based lending
           </Link>
           <div className="flex items-center gap-4">
+            <Link
+              to="/profile"
+              className="text-sm text-gray-600 hover:text-gray-800"
+            >
+              Profile
+            </Link>
+            <Link
+              to="/friends"
+              className="text-sm text-gray-600 hover:text-gray-800"
+            >
+              Friends
+            </Link>
             <span className="text-sm text-gray-500">Dashboard</span>
             <button
               type="button"
@@ -233,8 +255,28 @@ export default function Dashboard() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Borrower email
+                  Borrower
                 </label>
+                {friends.length > 0 && (
+                  <div className="mb-2">
+                    <span className="text-xs text-gray-500">Quick select: </span>
+                    {friends.map((fr) => (
+                      <button
+                        key={fr.id}
+                        type="button"
+                        onClick={() =>
+                          setForm((f: CreateArrangementInput) => ({
+                            ...f,
+                            borrowerEmail: fr.email,
+                          }))
+                        }
+                        className="mr-2 mt-1 px-2 py-1 text-xs rounded bg-teal-100 text-teal-800 hover:bg-teal-200"
+                      >
+                        {fr.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <input
                   type="email"
                   className="input"
