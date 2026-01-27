@@ -1,11 +1,7 @@
 # Hackathon Fintech Project
 
-## Problem Statement
+## 1. Trust-Based Lending Manager
 
-**Adaptive Credit Decisioning & Financial Behavior Modeling System**
+A digital tool to manage informal lending between friends or family by tracking repayments, sending polite reminders, and maintaining trust without legal complexity.
 
-Design an AI-powered credit decisioning system that evaluates loan applications by analyzing user financial behavior over time. The system should:
-
-- Assess creditworthiness based on financial patterns
-- Simulate repayment outcomes
-- Generate clear, explainable decisions for underbanked users
+**Focus:** Trust, transparency, and accountability in informal finance.
