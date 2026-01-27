@@ -1,0 +1,41 @@
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id        Int     @id @default(autoincrement())
+  name      String
+  email     String  @unique
+
+  loansGiven     Loan[] @relation("LoansGiven")
+  loansTaken     Loan[] @relation("LoansTaken")
+}
+
+model Loan {
+  id          Int        @id @default(autoincrement())
+  lenderId    Int
+  borrowerId  Int
+  amount      Float
+  description String
+  createdAt   DateTime   @default(now())
+  dueDate     DateTime?
+  status      String     @default("pending")
+
+  lender     User        @relation("LoansGiven", fields: [lenderId], references: [id])
+  borrower   User        @relation("LoansTaken", fields: [borrowerId], references: [id])
+  repayments Repayment[]
+}
+
+model Repayment {
+  id      Int      @id @default(autoincrement())
+  loanId  Int
+  amount  Float
+  paidAt  DateTime @default(now())
+
+  loan Loan @relation(fields: [loanId], references: [id])
+}
