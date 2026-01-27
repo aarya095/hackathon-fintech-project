@@ -1,4 +1,7 @@
+import "dotenv/config";
 import express from "express";
+import path from "path";
+import { existsSync } from "fs";
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
@@ -10,10 +13,17 @@ const prisma = new PrismaClient();
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-in-production";
 const PORT = process.env.PORT || 3000;
 
+/**
+ * CORS origin – single env var for deployment.
+ * Set CORS_ORIGIN to your app's public URL (e.g. https://app.example.com).
+ * Dev default: http://localhost:5173
+ */
+const CORS_ORIGIN = process.env.CORS_ORIGIN || "http://localhost:5173";
+
 app.use(express.json());
 app.use(
   cors({
-    origin: process.env.CORS_ORIGIN || "http://localhost:5173",
+    origin: CORS_ORIGIN,
     credentials: true,
   })
 );
@@ -71,18 +81,14 @@ const requireParticipant = (req, res, next) => {
 };
 
 // ---------------------------------------------------------------------------
-// Routes: /
-// ---------------------------------------------------------------------------
-
-app.get("/", (req, res) => {
-  res.json({ status: "API running", version: "v1", base: "/api/v1" });
-});
-
-// ---------------------------------------------------------------------------
 // Routes: /api/v1
 // ---------------------------------------------------------------------------
 
 const api = express.Router();
+
+api.get("/health", (req, res) => {
+  res.json({ status: "ok", version: "v1", base: "/api/v1" });
+});
 
 // ---------- Auth ----------
 
@@ -673,6 +679,16 @@ api.post("/arrangements/:id/close", requireParticipant, async (req, res) => {
 
 // Mount API
 app.use("/api/v1", api);
+
+// Serve frontend (production Docker build)
+const publicDir = path.join(process.cwd(), "public");
+if (existsSync(publicDir)) {
+  app.use(express.static(publicDir, { index: false }));
+  app.get("*", (req, res, next) => {
+    if (req.path.startsWith("/api")) return next();
+    res.sendFile(path.join(publicDir, "index.html"));
+  });
+}
 
 // 404
 app.use((req, res) => {

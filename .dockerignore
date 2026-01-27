@@ -1,0 +1,11 @@
+node_modules
+.git
+.env
+.env.*
+!.env.example
+*.md
+*.pdf
+backend/prisma/dev.db
+backend/prisma/*.db
+frontend/dist
+.DS_Store

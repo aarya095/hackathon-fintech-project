@@ -30,13 +30,14 @@ A gentle, transparent tool for managing informal lending between friends and fam
 
 ```bash
 cd backend
+cp .env.example .env   # then set DATABASE_URL, JWT_SECRET, CORS_ORIGIN as needed
 npm install
 npx prisma generate
 npx prisma db push
 npm run start
 ```
 
-The API runs at `http://localhost:3000`. Base path: `/api/v1`.
+The API runs at `http://localhost:3000`. Base path: `/api/v1`. `DATABASE_URL` is required (see `backend/.env.example`).
 
 ### Frontend
 
@@ -50,13 +51,42 @@ The app runs at `http://localhost:5173`.
 
 ### Environment (optional)
 
-- **Backend:** `JWT_SECRET`, `PORT`, `CORS_ORIGIN` (defaults work for local dev).
+- **Backend:** `DATABASE_URL` (required; see `backend/.env.example`), `JWT_SECRET`, `PORT`, `CORS_ORIGIN` (defaults work for local dev).
 - **Frontend:** `VITE_API_URL` or `VITE_API_BASE_URL` — API base URL (default: `http://localhost:3000`).
+
+## Docker (single-image deployment)
+
+Build and run the full stack (API + frontend) in one container:
+
+```bash
+docker build -t trust-lending .
+docker run -p 3000:3000 \
+  -v trust-lending-data:/app/data \
+  -e CORS_ORIGIN="https://your-app.example.com" \
+  -e JWT_SECRET="your-secret" \
+  trust-lending
+```
+
+- App: `http://localhost:3000` (or your host).
+- API: `http://localhost:3000/api/v1`.
+- Health: `GET /api/v1/health`.
+
+### CORS – one env var
+
+**Configure CORS in a single place:** set **`CORS_ORIGIN`** to your app’s public URL.
+
+| Where | What to set |
+|-------|-------------|
+| **Docker** | `-e CORS_ORIGIN="https://your-app.example.com"` |
+| **Backend `.env`** | `CORS_ORIGIN=https://your-app.example.com` |
+
+Use the URL users open in the browser (e.g. `https://app.example.com`). No other CORS config is needed.
 
 ## API Overview
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
+| GET | `/api/v1/health` | Health check |
 | POST | `/api/v1/auth/signup` | Create account |
 | POST | `/api/v1/auth/login` | Sign in |
 | POST | `/api/v1/auth/logout` | Sign out |
