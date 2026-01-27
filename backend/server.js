@@ -684,7 +684,7 @@ app.use("/api/v1", api);
 const publicDir = path.join(process.cwd(), "public");
 if (existsSync(publicDir)) {
   app.use(express.static(publicDir, { index: false }));
-  app.get("*", (req, res, next) => {
+  app.get(/(.*)/s, (req, res, next) => {
     if (req.path.startsWith("/api")) return next();
     res.sendFile(path.join(publicDir, "index.html"));
   });
