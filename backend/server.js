@@ -12,6 +12,7 @@ const app = express();
 const prisma = new PrismaClient();
 
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-in-production";
+const REMINDER_RATE_LIMIT_HOURS = Number(process.env.REMINDER_RATE_LIMIT_HOURS || 24);
 const PORT = process.env.PORT || 3000;
 
 /**
@@ -590,6 +591,69 @@ api.post("/arrangements/:id/payments", requireParticipant, async (req, res) => {
     },
   });
 
+  if (req.isLender) {
+    // Auto-confirm if lender records it (Wait, logic usually says lender recording = receipt = confirmed immediately?)
+    // Checking previous logic... recordPayment usually creates 'pending_confirmation' if borrower, but if lender does it, it should probably be 'confirmed' or 'pending' depending on app logic.
+    // The current app logic (lines 583-591 in previous view) creates it as 'pending_confirmation' even for lender? 
+    // Wait, let's check recordPayment again from previous view. It sets status: 'pending_confirmation'.
+    // BUT common sense says if Lender records it, they HAVE the money.
+    // The previous implementation plan implies Lender Receipts are confirmed.
+    // Let's UPDATE it to be 'confirmed' if isLender and check for auto-close.
+    // Actually, looking at the code I saw, it just creates 'pending_confirmation'.
+    // Optimizing: If Lender, set status 'confirmed', closedAt if 0.
+    // ... Actually, to be safe and consistent with existing code, let's see if there is code handling lender recording specifically.
+    // Line 594: `const recordedByRole = req.isLender ? "lender" : "borrower";`
+    // I will stick to modifying the response/post-creation logic.
+
+    // Actually, if lender records, we should mark as confirmed immediately.
+    // But let's stick to the prompt's `confirmPayment` modification for now and `recordPayment` if previously agreed.
+    // Plan said: "If req.isLender (auto-confirmed): Recalculate...".
+    // So I need to set it to confirmed IF isLender.
+  }
+
+  // Re-reading file content of recordPayment (lines 559+).
+  // It effectively makes it "pending_confirmation". 
+  // I will change it to be "confirmed" if req.isLender.
+
+  /* 
+  Re-writing the whole `recordPayment` block is risky.
+  Let's focus on:
+  1. `recordPayment` -> if (req.isLender) { status: 'confirmed' } ... and then check auto-close.
+  2. `confirmPayment` -> check auto-close.
+  */
+
+  if (req.isLender) {
+    // Lender recording = Auto-confirmed
+    await prisma.payment.update({
+      where: { id: payment.id },
+      data: { status: "confirmed", confirmedAt: new Date(), confirmedById: req.userId },
+    });
+
+    // Check availability for auto-close
+    // recalculate paid amount including this new payment
+    const totalPaid = await getPaidAmount(a.id);
+    const remaining = Math.max(0, a.totalAmount - totalPaid);
+
+    if (remaining <= 0) {
+      await prisma.arrangement.update({
+        where: { id: a.id },
+        data: {
+          status: "closed",
+          closedAt: new Date(),
+          closedMessage: "Auto-closed: Payment confirmed & balance settled."
+        },
+      });
+      await prisma.activity.create({
+        data: {
+          arrangementId: a.id,
+          type: "arrangement_closed",
+          actorRole: "system",
+          message: "Arrangement auto-closed: All money returned."
+        },
+      });
+    }
+  }
+
   const recordedByRole = req.isLender ? "lender" : "borrower";
   await prisma.activity.create({
     data: {
@@ -602,9 +666,9 @@ api.post("/arrangements/:id/payments", requireParticipant, async (req, res) => {
 
   return res.status(201).json({
     paymentId: String(payment.id),
-    status: "pending_confirmation",
+    status: req.isLender ? "confirmed" : "pending_confirmation",
     recordedBy: recordedByRole,
-    message: "Payment recorded and awaiting confirmation",
+    message: req.isLender ? "Receipt recorded & confirmed" : "Payment recorded and awaiting confirmation",
   });
 });
 
@@ -667,6 +731,25 @@ api.post("/payments/:paymentId/confirm", authMiddleware, async (req, res) => {
 
   const balanceRemaining = await getBalanceRemaining(payment.arrangement);
 
+  if (balanceRemaining <= 0) {
+    await prisma.arrangement.update({
+      where: { id: payment.arrangementId },
+      data: {
+        status: "closed",
+        closedAt: new Date(),
+        closedMessage: "Auto-closed: Payment confirmed & balance settled."
+      },
+    });
+    await prisma.activity.create({
+      data: {
+        arrangementId: payment.arrangementId,
+        type: "arrangement_closed",
+        actorRole: "system",
+        message: "Arrangement auto-closed: All money returned."
+      },
+    });
+  }
+
   return res.json({
     paymentId: String(payment.id),
     status: "confirmed",
@@ -728,9 +811,21 @@ api.post("/arrangements/:id/reminders", requireParticipant, async (req, res) => 
   if (a.status === "closed")
     return res.status(400).json({ error: "Cannot add reminders to a closed arrangement" });
 
+
+
   const { schedule, messageTone, customMessage } = req.body;
   const scheduleVal = schedule || "monthly";
   const tone = messageTone || "gentle";
+
+  // Singleton logic: Deactivate ALL existing active/snoozed reminders for this arrangement
+  await prisma.reminder.updateMany({
+    where: {
+      arrangementId: a.id,
+      status: { in: ["active", "snoozed"] }
+    },
+    data: { status: "inactive" }
+  });
+
   let nextTrigger = new Date();
   if (scheduleVal === "monthly") {
     nextTrigger.setMonth(nextTrigger.getMonth() + 1);
@@ -755,6 +850,71 @@ api.post("/arrangements/:id/reminders", requireParticipant, async (req, res) => 
     nextTrigger: reminder.nextTrigger,
     status: "active",
   });
+});
+
+api.post("/arrangements/:id/reminders/manual", requireParticipant, async (req, res) => {
+  const a = req.arrangement;
+  if (!req.isLender)
+    return res.status(403).json({ error: "Only the lender can send manual reminders" });
+  if (a.status === "closed")
+    return res.status(400).json({ error: "Cannot remind for a closed arrangement" });
+
+  const now = new Date();
+  if (a.lastRemindedAt) {
+    const hoursSince = (now.getTime() - new Date(a.lastRemindedAt).getTime()) / (1000 * 60 * 60);
+    if (REMINDER_RATE_LIMIT_HOURS > 0 && hoursSince < REMINDER_RATE_LIMIT_HOURS) {
+      return res.status(429).json({
+        error: `Please wait ${Math.ceil(REMINDER_RATE_LIMIT_HOURS - hoursSince)}h before sending another reminder.`
+      });
+    }
+  }
+
+  const borrowerEmail = a.borrower.email;
+  const lenderName = a.lender.name;
+  const title = a.title;
+  const msg = req.body.customMessage || "Just a gentle reminder — no rush. 🙂";
+  const body = `Hi,\n\n${lenderName} sent you a manual reminder about "${title}":\n\n"${msg}"\n\nLog in to view details.\n\n— Trust-based lending`;
+
+  try {
+    await sendMail(borrowerEmail, `Reminder: ${title} — Trust-based lending`, body);
+    await prisma.arrangement.update({
+      where: { id: a.id },
+      data: { lastRemindedAt: now },
+    });
+    await prisma.activity.create({
+      data: {
+        arrangementId: a.id,
+        type: "reminder_sent",
+        actorRole: "lender",
+        message: "Manual reminder sent"
+      }
+    });
+    return res.json({ status: "sent", message: "Reminder sent successfully" });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: "Failed to send email" });
+  }
+});
+
+api.delete("/reminders/:id", authMiddleware, async (req, res) => {
+  const rid = Number(req.params.id);
+  // Include arrangement to check permissions
+  const reminder = await prisma.reminder.findUnique({
+    where: { id: rid },
+    include: { arrangement: true }
+  });
+  if (!reminder) return res.status(404).json({ error: "Reminder not found" });
+
+  if (reminder.arrangement.lenderId !== req.userId) {
+    return res.status(403).json({ error: "Only lender can delete reminders" });
+  }
+
+  await prisma.reminder.update({
+    where: { id: rid },
+    data: { status: "inactive" }
+  });
+
+  return res.json({ status: "inactive", message: "Reminder turned off" });
 });
 
 api.post("/reminders/:id/snooze", authMiddleware, async (req, res) => {
@@ -1034,6 +1194,16 @@ async function processDueReminders() {
     try {
       const arr = r.arrangement;
       if (arr.status === "closed") continue;
+
+      // Rate limit check for auto-reminders too
+      if (arr.lastRemindedAt) {
+        const hoursSince = (Date.now() - new Date(arr.lastRemindedAt).getTime()) / (1000 * 60 * 60);
+        if (REMINDER_RATE_LIMIT_HOURS > 0 && hoursSince < REMINDER_RATE_LIMIT_HOURS) {
+          // Skip this cycle, try again next time (wait until limit expires)
+          continue;
+        }
+      }
+
       const borrowerEmail = arr.borrower.email;
       const lenderName = arr.lender.name;
       const title = arr.title;
@@ -1044,6 +1214,12 @@ async function processDueReminders() {
         `Reminder: ${title} — Trust-based lending`,
         body
       );
+
+      // Update lastRemindedAt on arrangement
+      await prisma.arrangement.update({
+        where: { id: arr.id },
+        data: { lastRemindedAt: new Date() } // Use current time
+      });
 
       let next = new Date(now);
       if (r.schedule === "monthly") next.setMonth(next.getMonth() + 1);

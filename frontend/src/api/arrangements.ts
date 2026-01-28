@@ -23,6 +23,8 @@ export type ArrangementDetail = {
   participants: { userId: string; role: string; name?: string }[]
   note: string | null
   status: string
+  closedAt?: string | null
+  closedMessage?: string | null
   currency: string
 }
 
@@ -198,5 +200,18 @@ export function closeArrangement(arrangementId: string, message?: string) {
   return api.post<{ status: string; closedAt: string }>(
     `${P}/arrangements/${arrangementId}/close`,
     { message }
+  )
+}
+
+export function sendManualReminder(arrangementId: string, customMessage?: string) {
+  return api.post<{ status: string; message: string }>(
+    `${P}/arrangements/${arrangementId}/reminders/manual`,
+    { customMessage }
+  )
+}
+
+export function deleteReminder(reminderId: string) {
+  return api.delete<{ status: string; message: string }>(
+    `${P}/reminders/${reminderId}`
   )
 }

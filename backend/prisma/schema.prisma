@@ -48,6 +48,7 @@ model Arrangement {
   status         String    @default("pending") // pending | active | closed
   closedAt       DateTime?
   closedMessage  String?
+  lastRemindedAt DateTime?
   createdAt      DateTime  @default(now())
 
   lenderId   Int

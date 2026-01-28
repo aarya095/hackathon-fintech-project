@@ -160,55 +160,68 @@ export default function Dashboard() {
         )}
 
         {loading ? (
-          <p className="mt-8 text-gray-500">Loading…</p>
+          <div className="flex flex-col items-center justify-center py-12">
+            <div className="w-8 h-8 border-2 border-teal-600 border-t-transparent rounded-full animate-spin"></div>
+            <p className="mt-4 text-gray-500 font-medium">Loading arrangements...</p>
+          </div>
         ) : list.length === 0 ? (
-          <div className="mt-12 p-8 rounded-xl bg-white border border-gray-200 text-center">
-            <p className="text-gray-600">You don&apos;t have any arrangements yet.</p>
-            <p className="mt-1 text-sm text-gray-500">
-              Create one to lend or borrow with someone you trust.
+          <div className="mt-12 p-12 rounded-2xl bg-white border border-gray-100 shadow-sm text-center flex flex-col items-center">
+            <div className="bg-teal-50 text-teal-600 w-16 h-16 rounded-full flex items-center justify-center mb-4 text-3xl">
+              🤝
+            </div>
+            <h3 className="text-xl font-bold text-gray-900">No arrangements yet</h3>
+            <p className="mt-2 text-gray-500 max-w-sm">
+              Create your first arrangement to track loans or debts with friends and build your trust score.
             </p>
             <button
               type="button"
               onClick={() => setCreateOpen(true)}
-              className="btn-primary mt-6"
+              className="btn-primary mt-8 px-6 py-2.5 shadow-lg shadow-teal-100"
             >
-              Create your first arrangement
+              Start a new arrangement
             </button>
           </div>
         ) : (
-          <ul className="mt-6 space-y-3">
+          <div className="grid gap-4 mt-6 sm:grid-cols-2 lg:grid-cols-3">
             {list.map((a) => (
-              <li key={a.id}>
-                <Link
-                  to={`/arrangements/${a.id}`}
-                  className="block p-4 rounded-xl bg-white border border-gray-200 hover:border-teal-300 hover:shadow-sm transition"
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <h2 className="font-semibold text-gray-900">{a.title}</h2>
-                      <p className="text-sm text-gray-500">
-                        You&apos;re the {a.role} · {formatCurrency(a.balanceRemaining, a.currency)} left
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`px-2 py-1 text-xs font-medium rounded-full ${
-                          a.status === "active"
-                            ? "bg-teal-100 text-teal-800"
-                            : a.status === "pending"
-                              ? "bg-amber-100 text-amber-800"
-                              : "bg-gray-100 text-gray-700"
-                        }`}
-                      >
-                        {a.status}
-                      </span>
-                      <span className="text-gray-400">→</span>
-                    </div>
+              <Link
+                key={a.id}
+                to={`/arrangements/${a.id}`}
+                className="group flex flex-col p-5 rounded-2xl bg-white border border-gray-100 shadow-sm hover:shadow-md hover:border-teal-200 transition-all duration-200"
+              >
+                <div className="flex items-start justify-between mb-4">
+                  <div className={`w-10 h-10 rounded-full flex items-center justify-center text-lg ${a.role === 'lender' ? 'bg-emerald-100 text-emerald-600' : 'bg-blue-100 text-blue-600'
+                    }`}>
+                    {a.role === 'lender' ? '↗️' : '↙️'}
                   </div>
-                </Link>
-              </li>
+                  <span
+                    className={`px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider rounded-full ${a.status === "active"
+                        ? "bg-teal-50 text-teal-700 border border-teal-100"
+                        : a.status === "pending"
+                          ? "bg-amber-50 text-amber-700 border border-amber-100"
+                          : "bg-gray-50 text-gray-600 border border-gray-100"
+                      }`}
+                  >
+                    {a.status}
+                  </span>
+                </div>
+
+                <h2 className="font-bold text-gray-900 text-lg mb-1 group-hover:text-teal-700 transition-colors">
+                  {a.title}
+                </h2>
+
+                <div className="mt-auto pt-4">
+                  <p className="text-sm text-gray-500 mb-1">Remaining Balance</p>
+                  <p className="text-2xl font-bold text-gray-900 tracking-tight">
+                    {formatCurrency(a.balanceRemaining, a.currency)}
+                  </p>
+                  <p className="text-xs text-gray-400 mt-2 flex items-center gap-1">
+                    You are the {a.role} <span className="group-hover:translate-x-1 transition-transform">→</span>
+                  </p>
+                </div>
+              </Link>
             ))}
-          </ul>
+          </div>
         )}
       </main>
 

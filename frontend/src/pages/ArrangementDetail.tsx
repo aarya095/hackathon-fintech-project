@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react"
-import { useParams, Link, useNavigate } from "react-router-dom"
+import { useParams, Link } from "react-router-dom"
 import { useAuthStore } from "../stores/auth"
-import { logout } from "@/api/auth"
 import {
   getArrangement,
   acceptArrangement,
@@ -18,6 +17,8 @@ import {
   getActivity,
   getTrustSummary,
   closeArrangement,
+  sendManualReminder,
+  deleteReminder,
   type ArrangementDetail,
   type PaymentItem,
   type ReminderItem,
@@ -25,6 +26,9 @@ import {
   type ActivityItem,
   type TrustSummary,
 } from "@/api/arrangements"
+import TrustScore from "../components/TrustScore"
+
+// --- Helpers ---
 
 function formatCurrency(amount: number, currency: string) {
   if (currency === "INR") return `₹${amount.toLocaleString("en-IN")}`
@@ -47,19 +51,47 @@ function formatDateTime(s: string) {
   })
 }
 
+function cn(...classes: (string | undefined | null | false)[]) {
+  return classes.filter(Boolean).join(" ");
+}
+
+// --- Components ---
+
+function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "px-4 py-2 text-sm font-medium border-b-2 transition-colors",
+        active
+          ? "border-teal-600 text-teal-700"
+          : "border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300"
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
 export default function ArrangementDetail() {
   const { id } = useParams<{ id: string }>()
-  const navigate = useNavigate()
+
   const auth = useAuthStore()
+
+  // Data State
   const [arr, setArr] = useState<ArrangementDetail | null>(null)
   const [payments, setPayments] = useState<PaymentItem[]>([])
   const [reminders, setReminders] = useState<ReminderItem[]>([])
   const [proposals, setProposals] = useState<ProposalItem[]>([])
   const [activity, setActivity] = useState<ActivityItem[]>([])
   const [trust, setTrust] = useState<TrustSummary | null>(null)
+
+  // UI State
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
+  const [activeTab, setActiveTab] = useState<"overview" | "payments" | "reminders" | "proposals" | "activity">("overview")
 
+  // Action States
   const [accepting, setAccepting] = useState(false)
   const [paymentAmount, setPaymentAmount] = useState("")
   const [paymentNote, setPaymentNote] = useState("")
@@ -67,7 +99,9 @@ export default function ArrangementDetail() {
   const [confirmingId, setConfirmingId] = useState<string | null>(null)
   const [rejectingId, setRejectingId] = useState<string | null>(null)
   const [reminderCustom, setReminderCustom] = useState("")
+  const [reminderSchedule, setReminderSchedule] = useState("monthly") // New state
   const [creatingReminder, setCreatingReminder] = useState(false)
+  const [sendingManual, setSendingManual] = useState(false) // New state
   const [snoozingId, setSnoozingId] = useState<string | null>(null)
   const [proposalExpected, setProposalExpected] = useState("")
   const [proposalReason, setProposalReason] = useState("")
@@ -106,30 +140,9 @@ export default function ArrangementDetail() {
     load()
   }, [id])
 
-  const handleLogout = async () => {
-    try {
-      await logout()
-    } catch {
-      /* ignore */
-    }
-    auth.logout()
-    navigate("/", { replace: true })
-  }
+  // --- Handlers ---
 
-  type Participant = { userId: string; role: string; name?: string }
-  const isLender = Boolean(
-    arr?.participants?.some(
-      (p: Participant) =>
-        p.role === "lender" && String(p.userId) === String(auth.userId)
-    )
-  )
-  const isBorrower = Boolean(
-    arr?.participants?.some(
-      (p: Participant) =>
-        p.role === "borrower" && String(p.userId) === String(auth.userId)
-    )
-  )
-  const canClose = arr && arr.balanceRemaining <= 0 && arr.status === "active"
+
 
   const handleAccept = async () => {
     if (!id) return
@@ -159,7 +172,7 @@ export default function ArrangementDetail() {
     try {
       await recordPayment(id, {
         amount,
-        paidOn: new Date().toISOString().slice(0, 10),
+        paidOn: new Date().toISOString(),
         note: paymentNote || undefined,
       })
       setPaymentAmount("")
@@ -221,14 +234,45 @@ export default function ArrangementDetail() {
     }
   }
 
+  const handleSendManual = async () => {
+    if (!id) return
+    setError("")
+    setSendingManual(true)
+    try {
+      await sendManualReminder(id, reminderCustom || undefined)
+      setReminderCustom("")
+      alert("Reminder sent!")
+      await load() // refresh lastRemindedAt logic if we tracked it (we don't show it yet but good practice)
+    } catch (err: unknown) {
+      const ax = err as { response?: { status?: number, data?: { error?: string } } }
+      if (ax.response?.status === 429) {
+        setError(ax.response?.data?.error ?? "Rate limit reached.")
+      } else {
+        setError("Could not send reminder.")
+      }
+    } finally {
+      setSendingManual(false)
+    }
+  }
+
+  const handleDeleteReminder = async (reminderId: string) => {
+    if (!id) return
+    if (!confirm("Turn off auto-reminder?")) return
+    setError("")
+    try {
+      await deleteReminder(reminderId)
+      await load()
+    } catch (e) {
+      setError("Could not turn off reminder.")
+    }
+  }
+
   const handleSnooze = async (reminderId: string) => {
     setError("")
     setSnoozingId(reminderId)
     try {
       await snoozeReminder(reminderId, {
-        snoozeUntil: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000)
-          .toISOString()
-          .slice(0, 10),
+        snoozeUntil: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
         reason: "Will pay soon",
       })
       await load()
@@ -289,10 +333,15 @@ export default function ArrangementDetail() {
     }
   }
 
+  // --- Render ---
+
   if (loading && !arr) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <p className="text-gray-500">Loading…</p>
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-8 h-8 border-2 border-teal-600 border-t-transparent rounded-full animate-spin"></div>
+          <p className="text-gray-500 font-medium animate-pulse">Loading arrangement...</p>
+        </div>
       </div>
     )
   }
@@ -300,478 +349,496 @@ export default function ArrangementDetail() {
   if (!id || !arr) {
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center gap-4">
-        <p className="text-gray-600">Arrangement not found.</p>
-        <Link to="/dashboard" className="text-teal-600 hover:underline">
+        <p className="text-gray-600 text-lg">Arrangement not found.</p>
+        <Link to="/dashboard" className="btn-primary">
           Back to dashboard
         </Link>
       </div>
     )
   }
 
-  const lenderName =
-    arr.participants?.find((p: Participant) => p.role === "lender")?.name ??
-    "Lender"
-  const borrowerName =
-    arr.participants?.find((p: Participant) => p.role === "borrower")?.name ??
-    "Borrower"
+  type Participant = { userId: string; role: string; name?: string }
+  const isLender = arr.participants?.some(p => p.role === "lender" && String(p.userId) === String(auth.userId))
+  const isBorrower = arr.participants?.some(p => p.role === "borrower" && String(p.userId) === String(auth.userId))
+
+  const otherParty = arr.participants?.find((p: Participant) =>
+    isLender ? p.role === "borrower" : p.role === "lender"
+  )
+  const otherName = otherParty?.name || (isLender ? "Borrower" : "Lender")
+  const lenderName = arr.participants?.find((p: Participant) => p.role === "lender")?.name || "Lender"
+
+
+  const canClose = arr.balanceRemaining <= 0 && arr.status === "active"
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="bg-white border-b border-gray-200">
-        <div className="mx-auto max-w-4xl px-4 py-4 flex items-center justify-between">
+    <div className="min-h-screen bg-gray-50 pb-12">
+      {/* Header */}
+      <header className="bg-white border-b border-gray-200 sticky top-0 z-10">
+        <div className="mx-auto max-w-5xl px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <Link
-              to="/dashboard"
-              className="text-gray-500 hover:text-gray-700"
-              aria-label="Back to dashboard"
-            >
-              ← Dashboard
+            <Link to="/dashboard" className="text-gray-400 hover:text-gray-600 transition-colors p-1" aria-label="Back">
+              ←
             </Link>
-            <span className="text-lg font-semibold text-teal-700">
-              Trust-based lending
+            <div>
+              <h1 className="text-lg font-semibold text-gray-900 leading-tight">{arr.title}</h1>
+              <p className="text-xs text-gray-500">
+                with {otherName}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className={`px-2.5 py-1 text-xs font-semibold rounded-full border ${arr.status === "active" ? "bg-teal-50 text-teal-700 border-teal-200" :
+              arr.status === "pending" ? "bg-amber-50 text-amber-700 border-amber-200" :
+                "bg-gray-100 text-gray-600 border-gray-200"
+              }`}>
+              {arr.status === 'active' ? 'Active' : arr.status === 'pending' ? 'Pending Acceptance' : 'Closed'}
             </span>
           </div>
-          <div className="flex items-center gap-4">
-            <Link
-              to="/profile"
-              className="text-sm text-gray-600 hover:text-gray-800"
-            >
-              Profile
-            </Link>
-            <Link
-              to="/friends"
-              className="text-sm text-gray-600 hover:text-gray-800"
-            >
-              Friends
-            </Link>
-            <button
-              type="button"
-              onClick={handleLogout}
-              className="text-sm text-gray-600 hover:text-gray-800"
-            >
-              Sign out
-            </button>
-          </div>
+        </div>
+
+        {/* Tabs */}
+        <div className="mx-auto max-w-5xl px-4 flex gap-1 overflow-x-auto scrollbar-hide">
+          <TabButton active={activeTab === 'overview'} onClick={() => setActiveTab('overview')}>Overview</TabButton>
+          <TabButton active={activeTab === 'payments'} onClick={() => setActiveTab('payments')}>Payments</TabButton>
+          <TabButton active={activeTab === 'reminders'} onClick={() => setActiveTab('reminders')}>Reminders</TabButton>
+          <TabButton active={activeTab === 'proposals'} onClick={() => setActiveTab('proposals')}>Proposals</TabButton>
+          <TabButton active={activeTab === 'activity'} onClick={() => setActiveTab('activity')}>Activity</TabButton>
         </div>
       </header>
 
-      <main className="mx-auto max-w-4xl px-4 py-8">
+      <main className="mx-auto max-w-5xl px-4 py-6">
         {error && (
-          <div
-            className="mb-6 p-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg"
-            role="alert"
-          >
+          <div className="mb-6 p-4 text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl shadow-sm animate-fade-in-up">
             {error}
           </div>
         )}
 
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">{arr.title}</h1>
-            <p className="text-gray-500 mt-1">
-              {lenderName} → {borrowerName}
-            </p>
-            <p className="mt-2 text-sm text-gray-600">
-              You&apos;re the{" "}
-              <span className="font-medium">{isLender ? "lender" : "borrower"}</span>
-            </p>
-          </div>
-          <span
-            className={`px-3 py-1 text-sm font-medium rounded-full ${
-              arr.status === "active"
-                ? "bg-teal-100 text-teal-800"
-                : arr.status === "pending"
-                  ? "bg-amber-100 text-amber-800"
-                  : "bg-gray-100 text-gray-700"
-            }`}
-          >
-            {arr.status}
-          </span>
-        </div>
+        {/* OVERVIEW TAB */}
+        {activeTab === 'overview' && (
+          <div className="space-y-6 animate-fade-in">
+            {arr.note && (
+              <div className="p-4 rounded-xl bg-teal-50 border border-teal-100/50 text-teal-900 text-sm shadow-sm relative overflow-hidden">
+                <div className="absolute top-0 right-0 p-2 opacity-10">
+                  <span className="text-6xl">📝</span>
+                </div>
+                <h3 className="font-semibold mb-1 text-teal-800">Note</h3>
+                <p className="relative z-10 opacity-90">{arr.note}</p>
+              </div>
+            )}
 
-        {arr.note && (
-          <p className="mt-4 p-4 rounded-xl bg-teal-50 border border-teal-100 text-gray-700">
-            {arr.note}
-          </p>
-        )}
-
-        <section className="mt-8 card">
-          <h2 className="text-lg font-semibold text-gray-900">Balance</h2>
-          <p className="mt-2 text-2xl font-bold text-gray-800">
-            {formatCurrency(arr.balanceRemaining, arr.currency)} remaining
-          </p>
-          <p className="text-sm text-gray-500 mt-1">
-            {formatCurrency(arr.paidAmount, arr.currency)} paid of{" "}
-            {formatCurrency(arr.totalAmount, arr.currency)} · Expected by{" "}
-            {formatDate(arr.expectedBy)}
-          </p>
-        </section>
-
-        {arr.status === "pending" && isBorrower && (
-          <section className="mt-6 card">
-            <p className="text-gray-700">
-              You&apos;ve been invited to this arrangement. Accept to get started.
-            </p>
-            <button
-              type="button"
-              onClick={handleAccept}
-              disabled={accepting}
-              className="btn-primary mt-4 disabled:opacity-60"
-            >
-              {accepting ? "Accepting…" : "Accept invitation"}
-            </button>
-          </section>
-        )}
-
-        {arr.status === "active" && (
-          <>
-            <section className="mt-8 card">
-              <h2 className="text-lg font-semibold text-gray-900">Payments</h2>
-              <ul className="mt-4 space-y-2">
-                {payments.length === 0 ? (
-                  <li className="text-gray-500 text-sm">No payments yet.</li>
-                ) : (
-                  payments.map((p: PaymentItem) => (
-                    <li
-                      key={p.id}
-                      className="flex flex-wrap items-center justify-between gap-2 py-2 border-b border-gray-100 last:border-0"
-                    >
-                      <div>
-                        <span className="font-medium">
-                          {formatCurrency(p.amount, arr.currency)}
-                        </span>
-                        <span className="text-gray-500 text-sm ml-2">
-                          {formatDate(p.paidOn)} · {p.recordedBy}
-                        </span>
-                        {p.note && (
-                          <p className="text-sm text-gray-500 mt-0.5">{p.note}</p>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span
-                          className={`text-xs px-2 py-0.5 rounded ${
-                            p.status === "confirmed"
-                              ? "bg-teal-100 text-teal-800"
-                              : p.status === "rejected"
-                                ? "bg-red-100 text-red-800"
-                                : "bg-amber-100 text-amber-800"
-                          }`}
-                        >
-                          {p.status === "confirmed"
-                            ? "Confirmed"
-                            : p.status === "rejected"
-                              ? "Rejected"
-                              : "Pending"}
-                        </span>
-                        {p.status === "pending_confirmation" && isLender && (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => handleConfirm(p.id)}
-                              disabled={confirmingId === p.id || rejectingId === p.id}
-                              className="text-sm text-teal-600 hover:underline disabled:opacity-60"
-                            >
-                              {confirmingId === p.id ? "Confirming…" : "Confirm"}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleReject(p.id)}
-                              disabled={rejectingId === p.id || confirmingId === p.id}
-                              className="text-sm text-red-600 hover:underline disabled:opacity-60"
-                            >
-                              {rejectingId === p.id ? "Rejecting…" : "Reject"}
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    </li>
-                  ))
-                )}
-              </ul>
-              <form onSubmit={handleRecordPayment} className="mt-6 flex flex-wrap gap-3 items-end">
+            <div className="grid md:grid-cols-2 gap-6">
+              {/* Balance Card */}
+              <section className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 flex flex-col justify-between h-full">
                 <div>
-                  <input
-                    type="number"
-                    min="0.01"
-                    max={arr.balanceRemaining}
-                    step="any"
-                    className="input w-32"
-                    value={paymentAmount}
-                    onChange={(e) => setPaymentAmount(e.target.value)}
-                    placeholder="Amount"
-                    required
-                    disabled={recordingPayment}
-                  />
-                  <p className="text-xs text-gray-500 mt-1">
-                    Max: {formatCurrency(arr.balanceRemaining, arr.currency)}
+                  <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-4">Balance Remaining</h2>
+                  <p className="text-4xl md:text-5xl font-bold text-gray-900 tracking-tight">
+                    {formatCurrency(arr.balanceRemaining, arr.currency)}
+                  </p>
+                  <div className="mt-4 flex items-center gap-2 text-sm text-gray-500">
+                    <div className="h-2 flex-1 bg-gray-100 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-teal-500 rounded-full"
+                        style={{ width: `${Math.min((arr.paidAmount / arr.totalAmount) * 100, 100)}%` }}
+                      />
+                    </div>
+                    <span className="shrink-0 font-medium">
+                      {Math.round((arr.paidAmount / arr.totalAmount) * 100)}% paid
+                    </span>
+                  </div>
+                  <p className="text-sm text-gray-400 mt-2">
+                    Total: {formatCurrency(arr.totalAmount, arr.currency)}
                   </p>
                 </div>
-                <input
-                  type="text"
-                  className="input flex-1 min-w-[140px]"
-                  value={paymentNote}
-                  onChange={(e) => setPaymentNote(e.target.value)}
-                  placeholder="Note (optional)"
-                  disabled={recordingPayment}
-                />
-                <button
-                  type="submit"
-                  className="btn-primary shrink-0"
-                  disabled={recordingPayment}
-                >
-                  {recordingPayment ? "Recording…" : "Record payment"}
-                </button>
-              </form>
-            </section>
-
-            {isLender && (
-              <section className="mt-8 card">
-                <h2 className="text-lg font-semibold text-gray-900">Reminders</h2>
-                <p className="text-sm text-gray-500 mt-1">
-                  Gentle nudge schedule. Borrower can snooze with a reason.
-                </p>
-                <ul className="mt-4 space-y-2">
-                  {reminders.map((r) => (
-                    <li
-                      key={r.id}
-                      className="flex flex-wrap items-center justify-between gap-2 py-2 border-b border-gray-100 last:border-0"
-                    >
-                      <div>
-                        <span className="text-sm">{r.schedule}</span>
-                        {r.customMessage && (
-                          <p className="text-gray-500 text-sm mt-0.5">
-                            &ldquo;{r.customMessage}&rdquo;
-                          </p>
-                        )}
-                        <span
-                          className={`text-xs px-2 py-0.5 rounded mt-1 inline-block ${
-                            r.status === "snoozed"
-                              ? "bg-amber-100 text-amber-800"
-                              : "bg-teal-100 text-teal-800"
-                          }`}
-                        >
-                          {r.status}
-                          {r.visibleNote && ` · ${r.visibleNote}`}
-                        </span>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-                <form onSubmit={handleCreateReminder} className="mt-6 flex flex-wrap gap-3">
-                  <input
-                    type="text"
-                    className="input flex-1 min-w-[200px]"
-                    value={reminderCustom}
-                    onChange={(e) => setReminderCustom(e.target.value)}
-                    placeholder="e.g. Hey! Just a small reminder — no rush 🙂"
-                    disabled={creatingReminder}
-                  />
-                  <button
-                    type="submit"
-                    className="btn-secondary shrink-0"
-                    disabled={creatingReminder}
-                  >
-                    {creatingReminder ? "Adding…" : "Add reminder"}
-                  </button>
-                </form>
+                <div className="mt-8 pt-6 border-t border-gray-50">
+                  <p className="text-sm text-gray-500">
+                    Expected by <span className="font-medium text-gray-700">{formatDate(arr.expectedBy)}</span>
+                  </p>
+                </div>
               </section>
-            )}
 
-            {isBorrower && reminders.some((r) => r.status === "active") && (
-              <section className="mt-8 card">
-                <h2 className="text-lg font-semibold text-gray-900">
-                  Active reminders
-                </h2>
-                <p className="text-sm text-gray-500 mt-1">
-                  You can snooze and add a short reason if you need more time.
-                </p>
-                <ul className="mt-4 space-y-2">
-                  {reminders
-                    .filter((r) => r.status === "active")
-                    .map((r) => (
-                      <li
-                        key={r.id}
-                        className="flex flex-wrap items-center justify-between gap-2 py-2"
-                      >
-                        <span className="text-sm">{r.customMessage || "Gentle reminder"}</span>
-                        <button
-                          type="button"
-                          onClick={() => handleSnooze(r.id)}
-                          disabled={snoozingId === r.id}
-                          className="text-sm text-teal-600 hover:underline disabled:opacity-60"
-                        >
-                          {snoozingId === r.id ? "Snoozing…" : "Snooze"}
-                        </button>
-                      </li>
-                    ))}
-                </ul>
-              </section>
-            )}
-
-            <section className="mt-8 card">
-              <h2 className="text-lg font-semibold text-gray-900">Proposals</h2>
-              <p className="text-sm text-gray-500 mt-1">
-                Suggest changes (e.g. new expected date). The other party can accept
-                or reject.
-              </p>
-              <ul className="mt-4 space-y-2">
-                {proposals.map((p: ProposalItem) => (
-                  <li
-                    key={p.id}
-                    className="flex flex-wrap items-center justify-between gap-2 py-2 border-b border-gray-100 last:border-0"
-                  >
-                    <div>
-                      <span className="font-medium">{p.type}</span>
-                      {p.newExpectedBy && (
-                        <span className="text-gray-500 text-sm ml-2">
-                          → {formatDate(p.newExpectedBy)}
-                        </span>
-                      )}
-                      {p.reason && (
-                        <p className="text-sm text-gray-500 mt-0.5">{p.reason}</p>
-                      )}
-                      <span className="text-xs text-gray-400">by {p.proposedBy}</span>
+              {/* Trust Summary Card */}
+              <section className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 h-full">
+                <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-4">Trust Health</h2>
+                {trust ? (
+                  <div className="flex flex-col items-center justify-center h-full pb-4">
+                    <TrustScore score={trust.paymentsOnTimeRatio} label="On-time Payment Ratio" />
+                    <p className="mt-6 text-center text-gray-600 font-medium leading-relaxed">
+                      {trust.summary}
+                    </p>
+                    <div className="mt-4 flex gap-4 text-xs text-gray-400 uppercase tracking-wider font-semibold">
+                      <span>Comms: {trust.communicationScore}</span>
+                      <span>Last Active: {formatDate(trust.lastInteraction)}</span>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`text-xs px-2 py-0.5 rounded ${
-                          p.status === "pending"
-                            ? "bg-amber-100 text-amber-800"
-                            : p.status === "accepted"
-                              ? "bg-teal-100 text-teal-800"
-                              : "bg-gray-100 text-gray-600"
-                        }`}
-                      >
-                        {p.status}
-                      </span>
-                      {p.status === "pending" &&
-                        ((isLender && p.proposedBy === borrowerName) ||
-                          (isBorrower && p.proposedBy === lenderName)) && (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => handleRespond(p.id, "accept")}
-                              disabled={respondingId === p.id}
-                              className="text-sm text-teal-600 hover:underline"
-                            >
-                              Accept
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleRespond(p.id, "reject")}
-                              disabled={respondingId === p.id}
-                              className="text-sm text-red-600 hover:underline"
-                            >
-                              Reject
-                            </button>
-                          </>
-                        )}
-                    </div>
-                  </li>
-                ))}
-              </ul>
-              <form onSubmit={handleCreateProposal} className="mt-6 flex flex-wrap gap-3">
-                <input
-                  type="date"
-                  className="input w-40"
-                  value={proposalExpected}
-                  onChange={(e) => setProposalExpected(e.target.value)}
-                  required
-                  disabled={creatingProposal}
-                />
-                <input
-                  type="text"
-                  className="input flex-1 min-w-[140px]"
-                  value={proposalReason}
-                  onChange={(e) => setProposalReason(e.target.value)}
-                  placeholder="Reason (optional)"
-                  disabled={creatingProposal}
-                />
-                <button
-                  type="submit"
-                  className="btn-secondary shrink-0"
-                  disabled={creatingProposal}
-                >
-                  {creatingProposal ? "Sending…" : "Propose new date"}
-                </button>
-              </form>
-            </section>
-
-            {trust && (
-              <section className="mt-8 card">
-                <h2 className="text-lg font-semibold text-gray-900">
-                  Trust summary
-                </h2>
-                <p className="mt-2 text-gray-700">{trust.summary}</p>
-                <p className="text-sm text-gray-500 mt-2">
-                  Payments on time: {(trust.paymentsOnTimeRatio * 100).toFixed(0)}% ·
-                  Communication: {trust.communicationScore} · Last interaction:{" "}
-                  {formatDate(trust.lastInteraction)}
-                </p>
-              </section>
-            )}
-
-            <section className="mt-8 card">
-              <h2 className="text-lg font-semibold text-gray-900">Activity</h2>
-              <ul className="mt-4 space-y-2">
-                {activity.length === 0 ? (
-                  <li className="text-gray-500 text-sm">No activity yet.</li>
+                  </div>
                 ) : (
-                  activity.map((a, i) => (
-                    <li
-                      key={i}
-                      className="flex flex-wrap items-baseline gap-2 py-1 text-sm"
-                    >
-                      <span className="text-gray-500">
-                        {formatDateTime(a.timestamp)}
-                      </span>
-                      <span className="text-gray-700">{a.message}</span>
-                      <span className="text-gray-400">({a.by})</span>
-                    </li>
-                  ))
+                  <div className="flex items-center justify-center h-48 text-gray-400 text-sm">
+                    Not enough data yet
+                  </div>
                 )}
-              </ul>
-            </section>
+              </section>
+            </div>
+
+            {/* Actions Area */}
+            {arr.status === "pending" && isBorrower && (
+              <section className="p-6 rounded-2xl bg-amber-50 border border-amber-100 text-center">
+                <h3 className="text-lg font-semibold text-amber-900">Review Invitation</h3>
+                <p className="text-amber-800 mt-1 mb-4 max-w-md mx-auto">
+                  {lenderName} invited you to this arrangement. Review the terms carefully.
+                </p>
+                <div className="flex justify-center gap-3">
+                  <button
+                    onClick={handleAccept}
+                    disabled={accepting}
+                    className="btn-primary bg-amber-600 hover:bg-amber-700 border-transparent text-white shadow-amber-200"
+                  >
+                    {accepting ? "Joining..." : "Accept & Join"}
+                  </button>
+                </div>
+              </section>
+            )}
 
             {canClose && (
-              <section className="mt-8 card border-teal-200 bg-teal-50/50">
-                <h2 className="text-lg font-semibold text-gray-900">
-                  All settled?
-                </h2>
-                <p className="text-sm text-gray-600 mt-1">
-                  Close this arrangement and leave a friendly note.
+              <section className="p-6 rounded-2xl bg-gradient-to-r from-teal-50 to-emerald-50 border border-teal-100">
+                <h3 className="text-lg font-semibold text-teal-900">✨ All settled!</h3>
+                <p className="text-teal-700 mt-1 mb-4 text-sm">
+                  The balance is zero. You can now close this arrangement.
                 </p>
-                <form onSubmit={handleClose} className="mt-4 space-y-3">
+                <form onSubmit={handleClose} className="flex gap-3 max-w-lg">
                   <input
                     type="text"
-                    className="input"
+                    className="input bg-white/80 border-transparent focus:bg-white flex-1"
                     value={closeMessage}
                     onChange={(e) => setCloseMessage(e.target.value)}
-                    placeholder="e.g. All settled. Thanks for the trust 🤝"
+                    placeholder="Closing note (optional)..."
                     disabled={closing}
                   />
-                  <button
-                    type="submit"
-                    className="btn-primary"
-                    disabled={closing}
-                  >
-                    {closing ? "Closing…" : "Close arrangement"}
+                  <button type="submit" className="btn-primary whitespace-nowrap" disabled={closing}>
+                    {closing ? "Closing..." : "Close Arrangement"}
                   </button>
                 </form>
               </section>
             )}
-          </>
+
+            {arr.status === "closed" && (
+              <div className="p-8 rounded-2xl bg-gray-100 border border-gray-200 text-center">
+                <span className="text-4xl">🔒</span>
+                <h3 className="mt-3 text-lg font-semibold text-gray-900">Arrangement Closed</h3>
+                <p className="text-gray-500 mt-1">
+                  Closed on {arr.closedAt ? formatDate(arr.closedAt) : 'recently'}.
+                  {arr.closedMessage && ` Note: "${arr.closedMessage}"`}
+                </p>
+              </div>
+            )}
+          </div>
         )}
 
-        {arr.status === "closed" && (
-          <section className="mt-8 card bg-gray-50">
-            <p className="text-gray-600">
-              This arrangement is closed. Everything&apos;s been settled.
-            </p>
-            <Link to="/dashboard" className="text-teal-600 hover:underline mt-2 inline-block">
-              Back to dashboard
-            </Link>
-          </section>
+        {/* PAYMENTS TAB */}
+        {activeTab === 'payments' && (
+          <div className="max-w-3xl mx-auto space-y-8 animate-fade-in">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xl font-bold text-gray-900">Payment History</h2>
+              <span className="text-sm text-gray-500">
+                {payments.length} {payments.length === 1 ? 'record' : 'records'}
+              </span>
+            </div>
+
+            {/* Record Payment Form */}
+            {arr.status === 'active' && (
+              <div className="bg-white rounded-xl p-5 border border-gray-200 shadow-sm">
+                <h3 className="text-sm font-semibold text-gray-700 mb-3">Record a new payment</h3>
+                <form onSubmit={handleRecordPayment} className="flex flex-col sm:flex-row gap-3">
+                  <div className="relative w-full sm:w-40">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 font-medium">
+                      {arr.currency === 'INR' ? '₹' : arr.currency}
+                    </span>
+                    <input
+                      type="number"
+                      min="0.01"
+                      max={arr.balanceRemaining}
+                      step="any"
+                      className="input pl-8 w-full font-medium"
+                      value={paymentAmount}
+                      onChange={(e) => setPaymentAmount(e.target.value)}
+                      placeholder="0.00"
+                      required
+                      disabled={recordingPayment}
+                    />
+                  </div>
+                  <input
+                    type="text"
+                    className="input flex-1"
+                    value={paymentNote}
+                    onChange={(e) => setPaymentNote(e.target.value)}
+                    placeholder="Add a note (e.g. Bank transfer, Cash)..."
+                    disabled={recordingPayment}
+                  />
+                  <button type="submit" className="btn-primary sm:w-auto w-full" disabled={recordingPayment}>
+                    {recordingPayment ? "Saving..." : (isLender ? "Record Receipt" : "Record Payment")}
+                  </button>
+                </form>
+              </div>
+            )}
+
+            {/* List */}
+            <div className="space-y-4">
+              {payments.length === 0 ? (
+                <div className="text-center py-12 bg-gray-50 rounded-xl border border-dashed border-gray-200">
+                  <p className="text-gray-400">No payments recorded yet.</p>
+                </div>
+              ) : (
+                payments.map((p) => (
+                  <div key={p.id} className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm hover:shadow-md transition-shadow relative overflow-hidden group">
+                    <div className={`absolute left-0 top-0 bottom-0 w-1 ${p.status === 'confirmed' ? 'bg-teal-500' :
+                      p.status === 'rejected' ? 'bg-red-500' : 'bg-amber-400'
+                      }`} />
+
+                    <div className="flex justify-between items-start pl-3">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-lg text-gray-900">
+                            {formatCurrency(p.amount, arr.currency)}
+                          </span>
+                          <span className={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded tracking-wide ${p.status === 'confirmed' ? 'bg-teal-100 text-teal-800' :
+                            p.status === 'rejected' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'
+                            }`}>
+                            {p.status.replace('_', ' ')}
+                          </span>
+                        </div>
+                        <p className="text-sm text-gray-500 mt-1">
+                          {formatDate(p.paidOn)} {new Date(p.paidOn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · Recorded by <span className="font-medium text-gray-700">{p.recordedBy}</span>
+                        </p>
+                        {p.note && (
+                          <p className="text-sm text-gray-600 mt-2 bg-gray-50 p-2 rounded-lg inline-block">
+                            {p.note}
+                          </p>
+                        )}
+                      </div>
+
+                      {/* Actions */}
+                      {p.status === "pending_confirmation" && isLender && (
+                        <div className="flex flex-col gap-2">
+                          <button
+                            onClick={() => handleConfirm(p.id)}
+                            disabled={confirmingId === p.id || rejectingId === p.id}
+                            className="px-3 py-1.5 bg-teal-600 text-white text-xs font-semibold rounded-lg hover:bg-teal-700 transition-colors shadow-sm"
+                          >
+                            {confirmingId === p.id ? "..." : "Confirm"}
+                          </button>
+                          <button
+                            onClick={() => handleReject(p.id)}
+                            disabled={rejectingId === p.id || confirmingId === p.id}
+                            className="px-3 py-1.5 bg-white border border-red-200 text-red-600 text-xs font-semibold rounded-lg hover:bg-red-50 transition-colors"
+                          >
+                            {rejectingId === p.id ? "..." : "Reject"}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* REMINDERS TAB */}
+        {activeTab === 'reminders' && (
+          <div className="max-w-2xl mx-auto space-y-6 animate-fade-in">
+            <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 text-sm text-blue-800 flex gap-3">
+              <span className="text-xl">💡</span>
+              <p>Reminders are gentle nudges. They help keep communication open without the awkwardness.</p>
+            </div>
+
+            {/* Active Reminder Layout */}
+            {isLender && arr.status === 'active' && (
+              <div className="bg-white rounded-xl p-5 border border-gray-200 shadow-sm">
+                <h3 className="text-sm font-semibold text-gray-700 mb-3">Auto-Reminder Settings</h3>
+                {reminders.some(r => r.status === 'active') ? (
+                  <div className="flex items-center justify-between p-4 bg-teal-50 border border-teal-100 rounded-lg">
+                    <div>
+                      <h4 className="font-semibold text-teal-800 flex items-center gap-2">
+                        ✅ Active: {reminders.find(r => r.status === 'active')?.schedule} Nudge
+                      </h4>
+                      <p className="text-sm text-teal-600 mt-1">
+                        Next one scheduled for: {reminders.find(r => r.status === 'active')?.nextTrigger ? formatDateTime(reminders.find(r => r.status === 'active')!.nextTrigger!) : 'Soon'}
+                      </p>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => {
+                          const r = reminders.find(r => r.status === 'active');
+                          if (r) handleDeleteReminder(r.id);
+                        }}
+                        className="px-3 py-1.5 bg-white border border-red-200 text-red-600 text-sm font-medium rounded hover:bg-red-50"
+                      >
+                        Turn Off
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <form onSubmit={handleCreateReminder} className="flex gap-3">
+                    <input
+                      type="text"
+                      className="input flex-1"
+                      value={reminderCustom}
+                      onChange={(e) => setReminderCustom(e.target.value)}
+                      placeholder="Message (optional)"
+                      disabled={creatingReminder || sendingManual}
+                    />
+                    <select
+                      className="input w-32"
+                      value={reminderSchedule}
+                      onChange={(e) => setReminderSchedule(e.target.value)}
+                    >
+                      <option value="monthly">Monthly</option>
+                      <option value="weekly">Weekly</option>
+                    </select>
+                    <button
+                      type="submit"
+                      className="px-4 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 disabled:opacity-50 text-sm font-medium"
+                      disabled={creatingReminder || sendingManual}
+                    >
+                      {creatingReminder ? "Saving..." : "Enable"}
+                    </button>
+                  </form>
+                )}
+              </div>
+            )}
+
+            {/* Manual Send Section */}
+            {isLender && arr.status === 'active' && (
+              <div className="bg-white rounded-xl p-5 border border-gray-200 shadow-sm flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-900">One-time check-in</h3>
+                  <p className="text-xs text-gray-500">Send an immediate email reminder.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleSendManual}
+                  className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 disabled:opacity-50 text-sm font-medium"
+                  disabled={sendingManual}
+                >
+                  {sendingManual ? "Sending..." : "Send Now"}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* PROPOSALS TAB */}
+        {activeTab === 'proposals' && (
+          <div className="max-w-2xl mx-auto space-y-6 animate-fade-in">
+            <div className="text-center mb-8">
+              <h2 className="text-xl font-bold text-gray-900">Propose Changes</h2>
+              <p className="text-gray-500 text-sm">Need more time? Propose a new date. It's better than silence.</p>
+            </div>
+
+            {arr.status === 'active' && (
+              <div className="bg-white rounded-xl p-6 border border-gray-200 shadow-sm relative overflow-hidden">
+                <div className="absolute top-0 left-0 w-1 h-full bg-indigo-500"></div>
+                <h3 className="font-semibold text-gray-900 mb-4">Propose new expected date</h3>
+                <form onSubmit={handleCreateProposal} className="space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1">New Date</label>
+                      <input
+                        type="date"
+                        className="input w-full"
+                        value={proposalExpected}
+                        onChange={(e) => setProposalExpected(e.target.value)}
+                        required
+                        disabled={creatingProposal}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1">Reason (Optional)</label>
+                      <input
+                        type="text"
+                        className="input w-full"
+                        value={proposalReason}
+                        onChange={(e) => setProposalReason(e.target.value)}
+                        placeholder="e.g. Salary delayed..."
+                        disabled={creatingProposal}
+                      />
+                    </div>
+                  </div>
+                  <div className="flex justify-end">
+                    <button type="submit" className="btn-primary bg-indigo-600 hover:bg-indigo-700 text-white" disabled={creatingProposal}>
+                      {creatingProposal ? "Sending..." : "Send Proposal"}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            )}
+
+            <div className="space-y-4 pt-4">
+              {proposals.map(p => (
+                <div key={p.id} className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-gray-900">New Date: {p.newExpectedBy ? formatDate(p.newExpectedBy) : 'N/A'}</span>
+                      <span className={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded ${p.status === 'pending' ? 'bg-amber-100 text-amber-800' :
+                        p.status === 'accepted' ? 'bg-teal-100 text-teal-800' : 'bg-gray-100 text-gray-600'
+                        }`}>
+                        {p.status}
+                      </span>
+                    </div>
+                    <p className="text-sm text-gray-500 mt-1">Proposed by {p.proposedBy}</p>
+                    {p.reason && <p className="text-sm text-gray-700 mt-2 bg-gray-50 p-2 rounded block w-full">"{p.reason}"</p>}
+                  </div>
+
+                  {p.status === 'pending' && (
+                    ((isLender && p.proposedBy === otherName) || (isBorrower && p.proposedBy === otherName)) && (
+                      <div className="flex gap-2 shrink-0">
+                        <button
+                          onClick={() => handleRespond(p.id, 'accept')}
+                          disabled={respondingId === p.id}
+                          className="px-3 py-1.5 bg-teal-600 text-white rounded-lg text-xs font-medium hover:bg-teal-700"
+                        >
+                          Accept
+                        </button>
+                        <button
+                          onClick={() => handleRespond(p.id, 'reject')}
+                          disabled={respondingId === p.id}
+                          className="px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg text-xs font-medium hover:bg-gray-200"
+                        >
+                          Reject
+                        </button>
+                      </div>
+                    )
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ACTIVITY TAB */}
+        {activeTab === 'activity' && (
+          <div className="max-w-2xl mx-auto animate-fade-in">
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+              <div className="p-4 border-b border-gray-50 bg-gray-50/50">
+                <h2 className="font-semibold text-gray-900">Activity Log</h2>
+              </div>
+              <div className="divide-y divide-gray-50">
+                {activity.length === 0 ? (
+                  <p className="p-8 text-center text-gray-400">No activity yet.</p>
+                ) : (
+                  activity.map((a, i) => (
+                    <div key={i} className="p-4 hover:bg-gray-50 transition-colors flex gap-3">
+                      <div className="mt-1 w-2 h-2 rounded-full bg-gray-300 shrink-0"></div>
+                      <div>
+                        <p className="text-sm text-gray-800">{a.message}</p>
+                        <p className="text-xs text-gray-400 mt-1">
+                          {formatDateTime(a.timestamp)} · <span className="capitalize">{a.by}</span>
+                        </p>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
         )}
       </main>
     </div>
