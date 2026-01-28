@@ -10,7 +10,6 @@ import {
   rejectPayment,
   getReminders,
   createReminder,
-  snoozeReminder,
   getProposals,
   createProposal,
   respondToProposal,
@@ -102,7 +101,6 @@ export default function ArrangementDetail() {
   const [reminderSchedule, setReminderSchedule] = useState("monthly") // New state
   const [creatingReminder, setCreatingReminder] = useState(false)
   const [sendingManual, setSendingManual] = useState(false) // New state
-  const [snoozingId, setSnoozingId] = useState<string | null>(null)
   const [proposalExpected, setProposalExpected] = useState("")
   const [proposalReason, setProposalReason] = useState("")
   const [creatingProposal, setCreatingProposal] = useState(false)
@@ -264,22 +262,6 @@ export default function ArrangementDetail() {
       await load()
     } catch (e) {
       setError("Could not turn off reminder.")
-    }
-  }
-
-  const handleSnooze = async (reminderId: string) => {
-    setError("")
-    setSnoozingId(reminderId)
-    try {
-      await snoozeReminder(reminderId, {
-        snoozeUntil: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
-        reason: "Will pay soon",
-      })
-      await load()
-    } catch (e) {
-      setError("Could not snooze reminder.")
-    } finally {
-      setSnoozingId(null)
     }
   }
 
