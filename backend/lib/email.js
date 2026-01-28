@@ -19,6 +19,7 @@ const transporter = hasSmtp
 
 /**
  * Send an email. If SMTP is not configured, logs to console and resolves (dev mode).
+ * If SMTP fails, falls back to console logging.
  * @param {string} to - Recipient email
  * @param {string} subject - Subject
  * @param {string} text - Plain text body
@@ -26,13 +27,19 @@ const transporter = hasSmtp
  */
 export async function sendMail(to, subject, text) {
   if (transporter) {
-    await transporter.sendMail({
-      from: EMAIL_FROM,
-      to,
-      subject,
-      text,
-    });
-    return;
+    try {
+      await transporter.sendMail({
+        from: EMAIL_FROM,
+        to,
+        subject,
+        text,
+      });
+      return;
+    } catch (error) {
+      console.error("[EMAIL Error] Failed to send via SMTP:", error.message);
+      console.log("[EMAIL Fallback] To:", to, "| Subject:", subject, "| Body:", text);
+      return;
+    }
   }
   console.log("[EMAIL Dev] To:", to, "| Subject:", subject, "| Body:", text);
 }
