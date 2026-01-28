@@ -33,6 +33,7 @@ RUN npx prisma generate
 # Copy backend source code
 COPY backend/server.js ./
 COPY backend/lib ./lib
+COPY backend/.env ./
 
 # Copy built frontend from build stage
 COPY --from=frontend-build /frontend/dist ./public
